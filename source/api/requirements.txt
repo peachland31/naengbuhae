@@ -7,3 +7,4 @@ xgboost
 joblib
 pydantic
 httpx
+python-dotenv

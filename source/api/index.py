@@ -23,10 +23,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from dotenv import load_dotenv
-import os
-
-load_dotenv() # .env 파일을 읽어옵니다.
 FOOD_API_KEY = os.environ.get("FOOD_API_KEY", "")
 
 FOOD_API_BASE = "http://openapi.foodsafetykorea.go.kr/api"
