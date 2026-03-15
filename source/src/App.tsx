@@ -609,12 +609,22 @@ export default function App() {
     setRecipeDetailLoading(true);
     try {
       const res = await fetch(`${API_BASE_URL}/recipe/detail?title=${encodeURIComponent(title)}`);
+      if (res.status === 404) {
+        // 공공데이터에 해당 레시피 없음 — notFound 플래그로 모달에 안내 표시
+        setRecipeDetail({ title, image: '', category: '', calorie: '', ingredients: '', steps: [], notFound: true });
+        return;
+      }
+      if (res.status === 503) {
+        // FOOD_API_KEY 미설정
+        setRecipeDetail({ title, image: '', category: '', calorie: '', ingredients: '', steps: [], notFound: true, reason: 'API 키 미설정' });
+        return;
+      }
       if (!res.ok) throw new Error(`${res.status}`);
       const data = await res.json();
       setRecipeDetail(data);
     } catch {
-      // 공공API 조회 실패 시 빈 상세로 모달 열기 (AI 추천 데이터는 aiRecipe로 표시)
-      setRecipeDetail({ title, image: '', category: '', calorie: '', ingredients: '', steps: [] });
+      // 네트워크 오류 등 — 빈 상세로 모달 열기
+      setRecipeDetail({ title, image: '', category: '', calorie: '', ingredients: '', steps: [], notFound: true, reason: '네트워크 오류' });
     } finally {
       setRecipeDetailLoading(false);
     }
@@ -1523,11 +1533,23 @@ function RecipeDetailModal({
             </div>
           )}
 
-          {/* ── 공공데이터 조회 실패 시 ── */}
-          {!recipeDetailLoading && recipeDetail?.steps?.length === 0 && (
+          {/* ── 공공데이터 미등록 / 오류 안내 ── */}
+          {!recipeDetailLoading && recipeDetail?.notFound && (
+            <div className="rounded-[20px] bg-[#f4f4f4] px-5 py-8 text-center">
+              <div className="text-[36px] mb-3">📭</div>
+              <p className="text-[13px] font-bold text-[#1A1F27]">공공데이터에 등록되지 않은 레시피예요</p>
+              <p className="mt-1.5 text-[12px] leading-relaxed text-[#8B95A1]">
+                {recipeDetail.reason ? recipeDetail.reason + ' — ' : ''}
+                AI가 추천한 레시피지만 식약처 레시피 DB에 없는 경우예요.<br />
+                아래 재료 매칭 정보를 참고해 직접 요리해보세요!
+              </p>
+            </div>
+          )}
+
+          {/* ── 조리 순서 없음 (등록은 됐으나 순서 데이터 없음) ── */}
+          {!recipeDetailLoading && !recipeDetail?.notFound && recipeDetail?.steps?.length === 0 && (
             <div className="rounded-[20px] bg-[#f4f4f4] px-5 py-6 text-center">
-              <p className="text-[13px] text-[#8B95A1]">조리 순서를 불러오지 못했어요.</p>
-              <p className="mt-1 text-[11px] text-[#C5CACC]">공공데이터 API에 해당 레시피가 없을 수 있어요.</p>
+              <p className="text-[13px] text-[#8B95A1]">조리 순서 정보가 없어요.</p>
             </div>
           )}
         </div>
