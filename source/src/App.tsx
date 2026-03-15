@@ -908,8 +908,23 @@ export default function App() {
                   );
                 })}
                 {sortedInventory.length === 0 && (
-                  <div className="rounded-[20px] bg-white px-4 py-10 text-center text-[13px] text-[#8B95A1] shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-                    조건에 맞는 식재료가 없어요.
+                  <div className="rounded-[20px] bg-white px-5 py-8 text-center shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+                    {inventory.length === 0 ? (
+                      <>
+                        <div className="text-[40px] mb-3">🧊</div>
+                        <p className="text-[14px] font-bold text-[#1A1F27]">냉장고가 비어있어요</p>
+                        <p className="mt-1 text-[12px] text-[#8B95A1]">식재료를 등록하면 맞춤 레시피를 추천받을 수 있어요.</p>
+                        <button onClick={() => setIsAddSheetOpen(true)} className="mt-4 rounded-[16px] bg-[#18CA87] px-6 py-3 text-[13px] font-bold text-white shadow-md shadow-[#18CA87]/30 outline-none focus:outline-none">
+                          🥬 식재료 등록하기
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-[40px] mb-3">🔍</div>
+                        <p className="text-[14px] font-bold text-[#1A1F27]">조건에 맞는 식재료가 없어요</p>
+                        <p className="mt-1 text-[12px] text-[#8B95A1]">검색어나 카테고리 필터를 변경해보세요.</p>
+                      </>
+                    )}
                   </div>
                 )}
               </section>
