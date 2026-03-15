@@ -5,7 +5,7 @@ type Allergy = '우유' | '계란' | '땅콩' | '견과류' | '밀' | '대두' |
 type StorageType = '냉장' | '냉동' | '실온';
 type Status = '신선' | '보통' | '빠른 소비 필요';
 type Tab = 'onboarding' | 'home' | 'fridge' | 'recipe' | 'profile';
-type Category = '전체' | '육류' | '채소' | '해산물' | '과일' | '유제품' | '건어물' | '견과류' | '쌀' | '계란류' | '신선식품' | '통조림' | '조미료';
+type Category = '전체' | '육류' | '채소' | '유제품' | '과일' | '해산물' | '조미료' | '신선식품';
 type SortMode = 'expiry' | 'remainingRatio' | 'recent';
 type RecipeSortMode = 'match' | 'urgent' | 'recent';
 type RecipeRecommendTab = 'ai' | 'selected';
@@ -127,7 +127,7 @@ const AVATARS: Avatar[] = [
 ];
 
 const ALLERGY_LIST: Allergy[] = ['우유', '계란', '땅콩', '견과류', '밀', '대두', '생선', '갑각류', '참깨'];
-const CATEGORY_LIST: Category[] = ['전체', '육류', '채소', '해산물', '과일', '유제품', '건어물', '견과류', '쌀', '계란류', '신선식품', '통조림', '조미료'];
+const CATEGORY_LIST: Category[] = ['전체', '육류', '채소', '유제품', '과일', '해산물', '조미료', '신선식품'];
 const HOUSEHOLD_CHIPS = [1, 2, 3, 4, 5] as const;
 const UNIT_OPTIONS = ['g', 'kg', 'ml', 'L', '개', '알', '모', '대', '봉', '팩', '캔', '송이', '마리'];
 
@@ -398,37 +398,32 @@ export default function App() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
 
+  // 선택 재료 기반 추천 상태
+  const [selectedRecommendations, setSelectedRecommendations] = useState<AIRecipeRecommendation[]>([]);
+  const [selectedLoading, setSelectedLoading] = useState(false);
+  const [selectedError, setSelectedError] = useState('');
+
   // 1. 식재료 마스터 상태
   const [masterIngredients, setMasterIngredients] = useState<any[]>([]);
-  const [ingredientsLoading, setIngredientsLoading] = useState(true);
-  const [ingredientsError, setIngredientsError] = useState('');
 
   // 2. 백엔드에서 데이터 불러오고 이모지 입히기
   useEffect(() => {
     const fetchMasterIngredients = async () => {
       try {
-        setIngredientsLoading(true);
-        setIngredientsError('');
         const res = await fetch(`${API_BASE_URL}/ingredients?limit=1000`);
-        if (!res.ok) throw new Error(`서버 오류: ${res.status}`);
         const data = await res.json();
-        if (!data.ingredients || data.ingredients.length === 0) {
-          throw new Error('식재료 목록이 비어있습니다.');
-        }
+        // 백엔드가 ingredient_id, ingredient_name 으로 내려줌 (index.py에서 rename 처리)
         const mappedIngredients = data.ingredients.map((item: any) => ({
           id:        item.ingredient_id,
           name:      item.ingredient_name,
           category:  item.category,
           emoji:     getIngredientEmoji(item.category, item.ingredient_name),
-          expiryDay: item.expiry_day || 7,
-          unit:      item.unit      || 'g',
+          expiryDay: item.expiry_day || 7,   // 마스터 DB의 실제 유통기한 사용
+          unit:      item.unit      || 'g',  // 마스터 DB의 실제 단위 사용
         }));
         setMasterIngredients(mappedIngredients);
-      } catch (error: any) {
+      } catch (error) {
         console.error("Failed to fetch ingredients:", error);
-        setIngredientsError(error.message || '식재료를 불러오지 못했습니다.');
-      } finally {
-        setIngredientsLoading(false);
       }
     };
     fetchMasterIngredients();
@@ -641,11 +636,60 @@ export default function App() {
   }
 };
 
+  // 선택 재료 기반 추천 — 선택 재료를 임박도 높은 inventory로 넣어 /recommend 별도 호출
+  const fetchSelectedRecommendations = async (selectedIds: string[]) => {
+    if (selectedIds.length === 0) {
+      setSelectedRecommendations([]);
+      return;
+    }
+    try {
+      setSelectedLoading(true);
+      setSelectedError('');
+      const now       = new Date();
+      const dayOfWeek = now.getDay();
+      // 선택 재료를 days_left=1(임박), owned_qty=500(충분)으로 설정
+      // → 해당 재료를 최우선 사용하는 레시피가 상위권에 오도록 유도
+      const selectedInventory = selectedIds.map((id) => ({
+        ingredient_id: id,
+        owned_qty:     500,
+        days_left:     1,
+      }));
+      const response = await fetch(`${API_BASE_URL}/recommend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          household_size:       profile.householdSize,
+          day_of_week:          dayOfWeek,
+          hour:                 now.getHours(),
+          allergies:            profile.allergies,
+          preferred_moods:      [],
+          inventory_confidence: 0.9,
+          top_k:                10,
+          inventory:            selectedInventory,
+        }),
+      });
+      if (!response.ok) throw new Error(`추천 실패: ${response.status}`);
+      const data = await response.json();
+      setSelectedRecommendations(data);
+    } catch (error) {
+      setSelectedError('선택 재료 추천이 응답하지 않습니다.');
+    } finally {
+      setSelectedLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (currentTab === 'recipe' && recipeRecommendTab === 'ai') {
       fetchAiRecommendations();
     }
   }, [currentTab, recipeRecommendTab, inventory, profile.householdSize, profile.allergies]);
+
+  // 선택 재료 변경 시 자동 추천 갱신
+  useEffect(() => {
+    if (currentTab === 'recipe' && recipeRecommendTab === 'selected') {
+      fetchSelectedRecommendations(priorityIngredientIds);
+    }
+  }, [currentTab, recipeRecommendTab, priorityIngredientIds, profile.householdSize, profile.allergies]);
 
   return (
     <div className={`flex min-h-screen items-center justify-center bg-[#f4f4f4] py-4 font-sans`}>
@@ -1059,48 +1103,56 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    {sortedSelectedRecipes.map((recipe) => (
-                      <button key={recipe.id} onClick={() => setSelectedRecipeId(recipe.id)} className="w-full overflow-hidden rounded-[24px] bg-white text-left outline-none focus:outline-none shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+                    {/* 선택 재료 추천 — /recommend API 직접 호출 */}
+                    <div className="flex items-center justify-between px-1 mb-1">
+                      <p className="text-[12px] text-[#6B7684]">
+                        {priorityIngredientIds.length === 0 ? '재료를 선택하면 추천이 시작돼요.' : `선택 재료 ${priorityIngredientIds.length}개 기반 추천`}
+                      </p>
+                      <button onClick={() => fetchSelectedRecommendations(priorityIngredientIds)} className="rounded-full bg-[#18CA87] px-3 py-1.5 text-[11px] font-bold text-white outline-none focus:outline-none shadow-sm shadow-[#18CA87]/20">
+                        {selectedLoading ? '불러오는 중...' : '다시 추천'}
+                      </button>
+                    </div>
+
+                    {selectedError && (
+                      <div className="rounded-[20px] bg-white px-4 py-6 text-center text-[13px] text-[#F04438] shadow-[0_2px_10px_rgba(0,0,0,0.02)]">{selectedError}</div>
+                    )}
+
+                    {!selectedLoading && priorityIngredientIds.length === 0 && (
+                      <div className="rounded-[20px] bg-white px-4 py-10 text-center text-[13px] text-[#8B95A1] shadow-[0_2px_10px_rgba(0,0,0,0.02)]">위에서 재료를 선택해주세요.</div>
+                    )}
+
+                    {!selectedLoading && priorityIngredientIds.length > 0 && selectedRecommendations.length === 0 && !selectedError && (
+                      <div className="rounded-[20px] bg-white px-4 py-10 text-center text-[13px] text-[#8B95A1] shadow-[0_2px_10px_rgba(0,0,0,0.02)]">선택한 재료로 만들 수 있는 레시피가 없어요.</div>
+                    )}
+
+                    {selectedRecommendations.map((recipe) => (
+                      <div key={recipe.recipe_id} className="w-full overflow-hidden rounded-[24px] bg-white text-left shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
                         <div className="bg-[#18CA87] px-5 py-5 text-white">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-bold">{recipe.mood}</span>
-                            <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-[#1A1F27]">점수 {recipe.score.toFixed(1)}</span>
+                            <span className="rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-bold">{recipe.mood || '선택 재료 추천'}</span>
+                            <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-[#1A1F27]">점수 {(recipe.pred_score * 100).toFixed(0)}</span>
                           </div>
                           <h3 className="mt-3.5 text-[20px] leading-[1.25] font-bold tracking-[-0.03em]">{recipe.title}</h3>
                           <div className="mt-2.5 flex gap-2">
-                            <span className="rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-bold">{recipe.level}</span>
-                            <span className="rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-bold">⏱ {recipe.timeMin}분</span>
+                            <span className="rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-bold">{recipe.level || '-'}</span>
+                            <span className="rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-bold">⏱ {recipe.timeMin ?? '-'}분</span>
                           </div>
                         </div>
                         <div className="p-5">
-                          <p className="text-[13px] leading-5 text-[#6B7684]">{recipe.description}</p>
-                          <div className="mt-4 rounded-[18px] bg-[#f4f4f4] p-3.5">
-                            <p className="text-[11px] font-bold text-[#1A1F27]">필요한 재료 ({profile.householdSize}인분)</p>
-                            <div className="mt-2.5 flex flex-wrap gap-2">
-                              {recipe.items.map((item) => {
-                                const master = ingredientMap[item.ingredientId];
-                                const invItem = inventory.find(inv => inv.ingredientId === item.ingredientId);
-                                const isOwned = invItem && invItem.quantity >= item.scaledQuantity;
-
-                                return (
-                                  <span key={item.ingredientId} className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${isOwned ? 'bg-[#E6F8ED] text-[#00A36F]' : 'bg-[#FEECEB] text-[#F04438]'}`}>
-                                    {master.name} {item.scaledQuantity}{master.unit}
-                                  </span>
-                                );
-                              })}
+                          <div className="rounded-[18px] bg-[#f4f4f4] p-3.5">
+                            <p className="text-[11px] font-bold text-[#1A1F27] mb-2">필요한 재료 <span className="ml-1 font-normal text-[#8B95A1]">{recipe.match_rate_pct ?? 0}% 보유</span></p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {(recipe.owned_main ?? []).map((name: string) => (<span key={`om-${name}`} className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F]">✓ {name}</span>))}
+                              {(recipe.missing_main_names ?? []).map((name: string) => (<span key={`mm-${name}`} className="rounded-full bg-[#FEECEB] px-2.5 py-1 text-[11px] font-bold text-[#F04438]">✕ {name}</span>))}
+                              {(recipe.owned_sub ?? []).map((name: string) => (<span key={`os-${name}`} className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F] opacity-70">✓ {name}</span>))}
+                              {(recipe.missing_sub_names ?? []).map((name: string) => (<span key={`ms-${name}`} className="rounded-full bg-[#f4f4f4] px-2.5 py-1 text-[11px] font-bold text-[#8B95A1] border border-[#E5E8EB]">✕ {name}</span>))}
                             </div>
                           </div>
                         </div>
-                      </button>
-                    ))}
-
-                    {sortedSelectedRecipes.length === 0 && (
-                      <div className="rounded-[20px] bg-white px-4 py-10 text-center text-[13px] text-[#8B95A1] shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-                        선택한 재료로 만들 수 있는 레시피가 없어요.
                       </div>
-                    )}
+                    ))}
                   </>
-                )}
+                )}                )}
               </section>
             </div>
           )}
@@ -1128,7 +1180,7 @@ export default function App() {
           </nav>
         )}
 
-        {isAddSheetOpen && <AddIngredientSheet masterIngredients={masterIngredients} ingredientsLoading={ingredientsLoading} ingredientsError={ingredientsError} onClose={() => setIsAddSheetOpen(false)} onAdd={(item) => { setInventory((prev) => [item, ...prev]); setIsAddSheetOpen(false); }} />}
+        {isAddSheetOpen && <AddIngredientSheet masterIngredients={masterIngredients} onClose={() => setIsAddSheetOpen(false)} onAdd={(item) => { setInventory((prev) => [item, ...prev]); setIsAddSheetOpen(false); }} />}
         {isInventoryDetailOpen && selectedInventory && <InventoryDetailModal item={selectedInventory} onClose={() => setIsInventoryDetailOpen(false)} onSave={handleSaveInventory} />}
         {selectedRecipe && <RecipeDetailModal recipe={selectedRecipe} inventory={inventory} householdSize={profile.householdSize} onClose={() => setSelectedRecipeId(null)} onComplete={handleCompleteRecipe} />}
         {isNotiOpen && <NotificationModal notifications={notifications} onClose={() => setIsNotiOpen(false)} onMarkRead={handleMarkNotiRead} />}
@@ -1190,7 +1242,7 @@ function SimpleUnitSelect({ value, onChange }: { value: string; onChange: (value
   );
 }
 
-function AddIngredientSheet({ masterIngredients, ingredientsLoading, ingredientsError, onClose, onAdd }: { masterIngredients: any[]; ingredientsLoading: boolean; ingredientsError: string; onClose: () => void; onAdd: (item: InventoryItem) => void }) {
+function AddIngredientSheet({ masterIngredients, onClose, onAdd }: { masterIngredients: any[]; onClose: () => void; onAdd: (item: InventoryItem) => void }) {
   const [ingredientQuery, setIngredientQuery] = useState('');
   const [selectedIngredient, setSelectedIngredient] = useState<any | null>(null);
   const [quantity, setQuantity] = useState(1);
@@ -1247,14 +1299,7 @@ function AddIngredientSheet({ masterIngredients, ingredientsLoading, ingredients
             />
             {/* ⭐️ 여기에 백엔드에서 매핑된 재료 목록이 렌더링 됩니다! */}
             <div className={`mt-2 max-h-40 overflow-y-auto space-y-1.5 ${hideScroll}`}>
-              {ingredientsLoading ? (
-                <div className="py-4 text-center text-[13px] text-[#8B95A1]">식재료 불러오는 중...</div>
-              ) : ingredientsError ? (
-                <div className="py-4 text-center text-[13px] text-[#F04438]">{ingredientsError}</div>
-              ) : filteredIngredients.length === 0 ? (
-                <div className="py-4 text-center text-[13px] text-[#8B95A1]">검색 결과가 없어요.</div>
-              ) : null}
-              {!ingredientsLoading && !ingredientsError && filteredIngredients.map((item) => {
+              {filteredIngredients.map((item) => {
                 const active = selectedIngredient?.id === item.id;
                 return (
                   <button
