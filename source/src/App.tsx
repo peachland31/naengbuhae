@@ -587,49 +587,47 @@ export default function App() {
   const unreadNotiCount = notifications.filter((n) => !n.isRead).length;
 
   const fetchAiRecommendations = async () => {
-    try {
-      setAiLoading(true);
-      setAiError('');
+  try {
+    setAiLoading(true);
+    setAiError('');
 
-      const now = new Date();
-      const jsDay = now.getDay();
-      const mondayBasedDay = jsDay === 0 ? 6 : jsDay - 1;
+    const now = new Date();
+    // 백엔드는 0(월요일)~6(일요일)을 기대할 확률이 높습니다. 
+    // 현재 index.py는 전처리 로직에 따라 다르지만 보통 0~6 범위를 사용합니다.
+    const dayOfWeek = now.getDay(); 
 
-      const inventoryPayload = inventory.map((item) => ({
-        ingredient_id: item.ingredientId,
-        owned_qty: item.quantity,
-        days_left: calculateDaysLeft(item.expiryDate),
-      }));
+    const inventoryPayload = inventory.map((item) => ({
+      // 중요: 백엔드 스키마는 'ingredient_id' (언더바)를 사용합니다.
+      ingredient_id: String(item.ingredientId), 
+      owned_qty: Number(item.quantity),
+      days_left: calculateDaysLeft(item.expiryDate),
+    }));
 
-      const response = await fetch(`${API_BASE_URL}/recommend`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          household_size: profile.householdSize,
-          day_of_week: mondayBasedDay,
-          hour: now.getHours(),
-          allergies: profile.allergies,
-          preferred_moods: [],
-          inventory_confidence: 0.9,
-          top_k: 10,
-          inventory: inventoryPayload,
-        }),
-      });
+    const response = await fetch(`${API_BASE_URL}/recommend`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        household_size: profile.householdSize,
+        day_of_week: dayOfWeek,
+        hour: now.getHours(),
+        allergies: profile.allergies,
+        preferred_moods: [],
+        inventory_confidence: 0.9,
+        top_k: 10,
+        inventory: inventoryPayload, // 매핑된 데이터를 보냅니다.
+      }),
+    });
 
-      if (!response.ok) {
-        throw new Error(`추천 API 호출 실패: ${response.status}`);
-      }
+    if (!response.ok) throw new Error(`추천 실패: ${response.status}`);
 
-      const data: AIRecipeRecommendation[] = await response.json();
-      setAiRecommendations(data);
-    } catch (error) {
-      setAiError(error instanceof Error ? error.message : 'AI 추천을 불러오지 못했습니다.');
-    } finally {
-      setAiLoading(false);
-    }
-  };
+    const data = await response.json();
+    setAiRecommendations(data);
+  } catch (error) {
+    setAiError('AI 추천 엔진이 응답하지 않습니다.');
+  } finally {
+    setAiLoading(false);
+  }
+};
 
   useEffect(() => {
     if (currentTab === 'recipe' && recipeRecommendTab === 'ai') {

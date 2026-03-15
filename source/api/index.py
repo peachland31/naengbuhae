@@ -8,19 +8,25 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# index.py 상단 (BASE_DIR 설정 부분 아래에 덮어쓰기)
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / "models"
-print(f"Checking model directory: {MODEL_DIR}")
 
+# 경로 변수들 정의 (RECIPE_ITEMS_PATH 누락 해결)
 MODEL_PATH = MODEL_DIR / "fridge_recipe_recommender.pkl"
 RECIPES_PATH = MODEL_DIR / "recipes_df.pkl"
 INGREDIENT_MASTER_PATH = MODEL_DIR / "ingredient_master.pkl"
-RECIPE_ITEMS_PATH = MODEL_DIR / "recipe_items_serving.pkl"
+RECIPE_ITEMS_PATH = MODEL_DIR / "recipe_items_df.pkl"  # <-- 이 줄이 꼭 있어야 합니다!
 
-# print(f"File exists: {(MODEL_DIR / 'ingredient_master.pkl').exists()}")
-# 디버깅용: 서버가 켜질 때 어떤 경로를 찾고 있는지 로그에 찍어줍니다.
+# 디버깅 로그
 print(f"DEBUG: Looking for models in: {MODEL_DIR}")
 print(f"DEBUG: Master file exists? {INGREDIENT_MASTER_PATH.exists()}")
+
+# 모델 및 데이터 로드 (변수명 오타 주의)
+model = joblib.load(MODEL_PATH)
+recipes = pd.read_pickle(RECIPES_PATH)
+ingredient_master = pd.read_pickle(INGREDIENT_MASTER_PATH)
+recipe_items_df = pd.read_pickle(RECIPE_ITEMS_PATH)
 
 app = FastAPI(title="Naengbuhae Recommendation API")
 
