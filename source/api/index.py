@@ -10,14 +10,16 @@
 - 응답 포맷: App.tsx 기존 인터페이스와 호환 유지
 """
 
+import os
 import re
 from typing import List, Optional
 from pathlib import Path
 
+import httpx
 import joblib
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -75,6 +77,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── 공공데이터 레시피 API 설정 ────────────────────────────────
+# Render 환경변수 FOOD_API_KEY 에 식약처 API 키를 등록하세요.
+FOOD_API_KEY  = os.environ.get("FOOD_API_KEY", "")
+FOOD_API_BASE = "http://openapi.foodsafetykorea.go.kr/api"
+
+# 서버 재시작 전까지 유지되는 메모리 캐시
+# 동일 레시피명 재요청 시 공공API 호출 없이 즉시 반환
+_recipe_detail_cache: dict = {}
 
 
 # ── Pydantic 스키마 ──────────────────────────────────────────
@@ -502,3 +513,82 @@ def recommend_selected(payload: SelectedRecommendRequest):
         })
 
     return results
+
+# ── 레시피 상세 엔드포인트 ──────────────────────────────────
+@app.get("/recipe/detail")
+async def get_recipe_detail(title: str):
+    """
+    레시피 타이틀로 식약처 공공데이터 레시피 상세 조회.
+
+    1. 메모리 캐시 확인 → 히트 시 즉시 반환
+    2. 공공데이터 API 정확 매칭(RCP_NM=title) 호출
+    3. 결과 없으면 공백 제거 후 재시도 (예: "김치 볶음밥" → "김치볶음밥")
+    4. 그래도 없으면 404
+
+    반환 필드:
+      title       - 레시피명
+      image       - 대표 이미지 URL
+      category    - 요리 종류 (예: 볶음, 국·찌개)
+      calorie     - 열량 (kcal)
+      ingredients - 재료 문자열 (원문 그대로)
+      steps       - [{order, desc, image}] 조리 순서
+    """
+    # 1. 캐시 확인
+    cache_key = title.strip()
+    if cache_key in _recipe_detail_cache:
+        return _recipe_detail_cache[cache_key]
+
+    if not FOOD_API_KEY:
+        raise HTTPException(status_code=503, detail="FOOD_API_KEY 환경변수가 설정되지 않았습니다.")
+
+    async def fetch_by_name(name: str):
+        """공공API에서 RCP_NM 정확 매칭으로 1건 조회"""
+        url = f"{FOOD_API_BASE}/{FOOD_API_KEY}/COOKRCP01/json/1/5/RCP_NM={name}"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(url)
+            res.raise_for_status()
+        data = res.json()
+        rows = data.get("COOKRCP01", {}).get("row", [])
+        # RCP_NM이 정확히 일치하는 것만 반환
+        return [r for r in rows if r.get("RCP_NM", "").strip() == name]
+
+    # 2. 정확 매칭 시도
+    rows = await fetch_by_name(title.strip())
+
+    # 3. 결과 없으면 공백 제거 후 재시도
+    if not rows:
+        no_space = title.replace(" ", "")
+        if no_space != title.strip():
+            rows = await fetch_by_name(no_space)
+
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"'{title}' 레시피를 공공데이터에서 찾을 수 없습니다.")
+
+    row = rows[0]
+
+    # 4. 조리 순서 파싱 (MANUAL01~20, MANUAL_IMG01~20)
+    steps = []
+    for i in range(1, 21):
+        key     = f"MANUAL{str(i).zfill(2)}"
+        img_key = f"MANUAL_IMG{str(i).zfill(2)}"
+        desc    = (row.get(key) or "").strip()
+        if not desc:
+            break
+        steps.append({
+            "order": i,
+            "desc":  desc,
+            "image": (row.get(img_key) or "").strip(),
+        })
+
+    result = {
+        "title":       row.get("RCP_NM", "").strip(),
+        "image":       (row.get("ATT_FILE_NO_MAIN") or "").strip(),
+        "category":    (row.get("RCP_PAT2") or "").strip(),
+        "calorie":     (row.get("INFO_ENG") or "").strip(),
+        "ingredients": (row.get("RCP_PARTS_DTLS") or "").strip(),
+        "steps":       steps,
+    }
+
+    # 5. 캐시 저장
+    _recipe_detail_cache[cache_key] = result
+    return result
