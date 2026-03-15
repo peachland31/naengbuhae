@@ -90,6 +90,32 @@ app.add_middleware(
 _recipe_detail_cache: dict = {}
 
 
+# ── 재료명 유효성 필터 ──────────────────────────────────────
+# recipes_df.pkl 파싱 오류로 인해 섞여 들어온 섹션 라벨 제거
+# 모델 재학습 없이 응답 시점에 필터링
+_INVALID_INGREDIENT_PATTERNS = re.compile(
+    r'^(주재료|부재료|양념|양념장|소스|드레싱|토핑|장식|재료|기타|다진|볶은|'
+    r'삶은|구운|찐|데친|무친|절인|말린|건|생|냉동|냉장|유기농|국내산|수입산|'
+    r'적당량|약간|조금|少量|少々|다진것|다진 것|손질한|손질).*$'
+)
+_MIN_LEN = 2   # 1글자 토큰 제거
+_MAX_LEN = 15  # 너무 긴 문자열 제거 (문장 수준)
+
+def is_valid_ingredient(name: str) -> bool:
+    """재료명으로 유효한지 검사"""
+    if not name or not isinstance(name, str):
+        return False
+    name = name.strip()
+    if len(name) < _MIN_LEN or len(name) > _MAX_LEN:
+        return False
+    if _INVALID_INGREDIENT_PATTERNS.match(name):
+        return False
+    # 숫자만 있거나 숫자로 시작하는 토큰 제거 (예: "1개", "300g")
+    if re.match(r"^[0-9]", name):
+        return False
+    return True
+
+
 # ── Pydantic 스키마 ──────────────────────────────────────────
 class InventoryItem(BaseModel):
     """
@@ -326,8 +352,8 @@ def recommend_top_k(payload: RecommendRequest) -> list:
         recipe = filtered[filtered["recipe_id"] == rid].iloc[0]
 
         # 보유/미보유 재료 분리
-        req_names  = recipe["required_ingredients"] or []
-        main_names = recipe["main_ingredients"] or []
+        req_names  = [n for n in (recipe["required_ingredients"] or []) if is_valid_ingredient(n)]
+        main_names = [n for n in (recipe["main_ingredients"] or [])    if is_valid_ingredient(n)]
         sub_names  = [n for n in req_names if n not in set(main_names)]
 
         owned_main    = [n for n in main_names if n in fridge_map]
@@ -481,8 +507,8 @@ def recommend_selected(payload: SelectedRecommendRequest):
     # 응답 조립 — AI 추천과 동일한 포맷
     results = []
     for _, row in top_df.iterrows():
-        req_names  = row["required_ingredients"] or []
-        main_names = row["main_ingredients"] or []
+        req_names  = [n for n in (row["required_ingredients"] or []) if is_valid_ingredient(n)]
+        main_names = [n for n in (row["main_ingredients"] or [])     if is_valid_ingredient(n)]
         sub_names  = [n for n in req_names if n not in set(main_names)]
 
         # 선택 재료 기준으로 보유/미보유 구분
@@ -534,52 +560,32 @@ async def get_recipe_detail(title: str):
     if not FOOD_API_KEY:
         raise HTTPException(status_code=503, detail="FOOD_API_KEY 환경변수가 설정되지 않았습니다.")
 
-    def normalize(s: str) -> str:
-        """공백·특수문자 제거 후 소문자 변환 — 느슨한 비교용"""
-        return re.sub(r'[\s\-_·•]', '', s).lower()
-
-    async def fetch_candidates(query: str):
-        """공공API에서 query로 부분검색 후 결과 rows 반환 (최대 10건)"""
-        url = f"{FOOD_API_BASE}/{FOOD_API_KEY}/COOKRCP01/json/1/10/RCP_NM={query}"
+    async def fetch_by_name(name: str):
+        url = f"{FOOD_API_BASE}/{FOOD_API_KEY}/COOKRCP01/json/1/5/RCP_NM={name}"
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.get(url)
             res.raise_for_status()
         data = res.json()
-        return data.get("COOKRCP01", {}).get("row", [])
+        rows = data.get("COOKRCP01", {}).get("row", [])
+        # 정확히 일치하는 것만
+        return [r for r in rows if r.get("RCP_NM", "").strip() == name]
 
-    def best_match(rows: list, target: str):
-        """
-        후보 rows 중 가장 잘 맞는 레시피 1건 반환.
-        우선순위:
-          1) RCP_NM 정규화 완전 일치
-          2) 공백 제거 후 완전 일치
-          3) 첫 번째 결과 (부분 일치 fallback)
-        """
-        norm_target = normalize(target)
-        for r in rows:
-            if r.get("RCP_NM", "").strip() == target:
-                return r
-        for r in rows:
-            if normalize(r.get("RCP_NM", "")) == norm_target:
-                return r
-        return rows[0] if rows else None
+    # 1차 시도: 원본 타이틀
+    rows = await fetch_by_name(cache_key)
 
-    # 1차: 원본 타이틀 전체로 부분검색
-    rows = await fetch_candidates(cache_key)
-    row = best_match(rows, cache_key) if rows else None
+    # 2차 시도: 공백 제거 (예: "김치 볶음밥" → "김치볶음밥")
+    if not rows:
+        no_space = cache_key.replace(" ", "")
+        if no_space != cache_key:
+            rows = await fetch_by_name(no_space)
 
-    # 2차: 앞 키워드 2~3글자로 재검색 (긴 제목 대응)
-    if not row and len(cache_key) >= 4:
-        short_query = cache_key[:4].replace(" ", "")
-        rows2 = await fetch_candidates(short_query)
-        row = best_match(rows2, cache_key) if rows2 else None
-
-    if not row:
+    if not rows:
         raise HTTPException(
             status_code=404,
             detail=f"'{title}' 레시피를 공공데이터에서 찾을 수 없습니다."
         )
 
+    row = rows[0]
 
     # 조리 순서 파싱 (MANUAL01~20, MANUAL_IMG01~20)
     steps = []
