@@ -10,11 +10,17 @@ from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / "models"
+print(f"Checking model directory: {MODEL_DIR}")
 
 MODEL_PATH = MODEL_DIR / "fridge_recipe_recommender.pkl"
-RECIPES_PATH = MODEL_DIR / "recipes_serving.pkl"
+RECIPES_PATH = MODEL_DIR / "recipes_df.pkl"
 INGREDIENT_MASTER_PATH = MODEL_DIR / "ingredient_master.pkl"
 RECIPE_ITEMS_PATH = MODEL_DIR / "recipe_items_serving.pkl"
+
+# print(f"File exists: {(MODEL_DIR / 'ingredient_master.pkl').exists()}")
+# 디버깅용: 서버가 켜질 때 어떤 경로를 찾고 있는지 로그에 찍어줍니다.
+print(f"DEBUG: Looking for models in: {MODEL_DIR}")
+print(f"DEBUG: Master file exists? {INGREDIENT_MASTER_PATH.exists()}")
 
 app = FastAPI(title="Naengbuhae Recommendation API")
 

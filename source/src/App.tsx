@@ -94,7 +94,7 @@ type ScaledRecipe = Recipe & {
 const hideScroll = "[&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]";
 
 // src/services/api.js 예시
-const API_BASE_URL = "/api"; // Vercel rewrite 설정 덕분에 /api로 시작하면 백엔드로 연결됩니다.
+const API_BASE_URL = "https://naengbuhae-api.onrender.com";  // Vercel rewrite 설정 덕분에 /api로 시작하면 백엔드로 연결됩니다.
 
 export const getRecommendations = async (data) => {
   const response = await fetch(`${API_BASE_URL}/recommend`, {
@@ -397,7 +397,8 @@ export default function App() {
   useEffect(() => {
     const fetchMasterIngredients = async () => {
       try {
-        const res = await fetch('http://localhost:8000/api/ingredients?limit=1000');
+        const res = await fetch(`${API_BASE_URL}/ingredients?limit=1000`);
+        
         const data = await res.json();
         
         // 백엔드 데이터를 프론트엔드 인터페이스에 맞게 매핑 (이모지 추가)
