@@ -379,11 +379,12 @@ def get_ingredients(limit: int = 1000):
 
 class SelectedRecommendRequest(BaseModel):
     selected_ingredient_ids: List[str]   # 선택한 재료 id 목록
+    match_mode: str = 'or'               # 'or': 하나라도 포함 / 'and': 모두 포함
     household_size: int = 1
     day_of_week: int = 0
     hour: int = 19
     allergies: List[str] = []
-    top_k: int = 10
+    top_k: int = 20
 
 
 @app.post("/recommend")
@@ -431,9 +432,15 @@ def recommend_selected(payload: SelectedRecommendRequest):
     if filtered.empty:
         return []
 
-    # 선택 재료가 하나라도 포함된 레시피만 필터링 (OR 조건)
-    def contains_selected(req_list):
-        return any(name in selected_set for name in (req_list or []))
+    # match_mode에 따라 OR / AND 조건으로 필터링
+    # OR: 선택 재료 중 하나라도 포함된 레시피
+    # AND: 선택 재료가 모두 포함된 레시피
+    if payload.match_mode == 'and':
+        def contains_selected(req_list):
+            return all(name in set(req_list or []) for name in selected_names)
+    else:
+        def contains_selected(req_list):
+            return any(name in selected_set for name in (req_list or []))
 
     matched = filtered[filtered["required_ingredients"].apply(contains_selected)].copy()
 

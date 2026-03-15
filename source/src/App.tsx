@@ -637,35 +637,36 @@ export default function App() {
 };
 
   // 선택 재료 기반 추천 — 선택 재료를 임박도 높은 inventory로 넣어 /recommend 별도 호출
-  const fetchSelectedRecommendations = async (selectedIds: string[]) => {
-    if (selectedIds.length === 0) {
-      setSelectedRecommendations([]);
-      return;
-    }
+  const fetchSelectedRecommendations = async (selectedIds: string[], matchMode: 'or' | 'and' = 'or') => {
     try {
       setSelectedLoading(true);
       setSelectedError('');
       const now       = new Date();
       const dayOfWeek = now.getDay();
-      // 선택 재료를 days_left=1(임박), owned_qty=500(충분)으로 설정
-      // → 해당 재료를 최우선 사용하는 레시피가 상위권에 오도록 유도
-      const selectedInventory = selectedIds.map((id) => ({
-        ingredient_id: id,
-        owned_qty:     500,
-        days_left:     1,
-      }));
-      const response = await fetch(`${API_BASE_URL}/recommend`, {
+
+      // 전체(선택 없음): 냉장고 재료 전체를 OR 조건으로 보냄
+      // 재료 선택: 선택한 재료를 AND 또는 OR 조건으로 보냄
+      const idsToSend = selectedIds.length === 0
+        ? inventory.map((item) => item.ingredientId)  // 냉장고 전체
+        : selectedIds;
+
+      if (idsToSend.length === 0) {
+        setSelectedRecommendations([]);
+        setSelectedLoading(false);
+        return;
+      }
+
+      const response = await fetch(`${API_BASE_URL}/recommend/selected`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          household_size:       profile.householdSize,
-          day_of_week:          dayOfWeek,
-          hour:                 now.getHours(),
-          allergies:            profile.allergies,
-          preferred_moods:      [],
-          inventory_confidence: 0.9,
-          top_k:                10,
-          inventory:            selectedInventory,
+          selected_ingredient_ids: idsToSend,
+          match_mode:              selectedIds.length === 0 ? 'or' : matchMode,
+          household_size:          profile.householdSize,
+          day_of_week:             dayOfWeek,
+          hour:                    now.getHours(),
+          allergies:               profile.allergies,
+          top_k:                   20,
         }),
       });
       if (!response.ok) throw new Error(`추천 실패: ${response.status}`);
@@ -687,9 +688,10 @@ export default function App() {
   // 선택 재료 변경 시 자동 추천 갱신
   useEffect(() => {
     if (currentTab === 'recipe' && recipeRecommendTab === 'selected') {
-      fetchSelectedRecommendations(priorityIngredientIds);
+      // 선택 재료 있으면 AND 조건, 없으면 냉장고 전체로 OR 조건
+      fetchSelectedRecommendations(priorityIngredientIds, priorityIngredientIds.length > 0 ? 'and' : 'or');
     }
-  }, [currentTab, recipeRecommendTab, priorityIngredientIds, profile.householdSize, profile.allergies]);
+  }, [currentTab, recipeRecommendTab, priorityIngredientIds, profile.householdSize, profile.allergies, inventory]);
 
   return (
     <div className={`flex min-h-screen items-center justify-center bg-[#f4f4f4] py-4 font-sans`}>
@@ -1117,12 +1119,32 @@ export default function App() {
                       <div className="rounded-[20px] bg-white px-4 py-6 text-center text-[13px] text-[#F04438] shadow-[0_2px_10px_rgba(0,0,0,0.02)]">{selectedError}</div>
                     )}
 
-                    {!selectedLoading && priorityIngredientIds.length === 0 && (
-                      <div className="rounded-[20px] bg-white px-4 py-10 text-center text-[13px] text-[#8B95A1] shadow-[0_2px_10px_rgba(0,0,0,0.02)]">위에서 재료를 선택해주세요.</div>
+                    {!selectedLoading && inventory.length === 0 && (
+                      <div className="rounded-[20px] bg-white px-5 py-8 text-center shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+                        <div className="text-[40px] mb-3">🧊</div>
+                        <p className="text-[14px] font-bold text-[#1A1F27]">냉장고가 비어있어요</p>
+                        <p className="mt-1 text-[12px] text-[#8B95A1]">식재료를 먼저 등록하면 레시피를 추천받을 수 있어요.</p>
+                        <button onClick={() => setCurrentTab('fridge')} className="mt-4 rounded-[16px] bg-[#18CA87] px-6 py-3 text-[13px] font-bold text-white shadow-md shadow-[#18CA87]/30 outline-none focus:outline-none">
+                          🥬 냉장고에 재료 등록하기
+                        </button>
+                      </div>
+                    )}
+
+                    {!selectedLoading && inventory.length > 0 && priorityIngredientIds.length === 0 && selectedRecommendations.length === 0 && !selectedError && (
+                      <div className="rounded-[20px] bg-white px-4 py-10 text-center text-[13px] text-[#8B95A1] shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+                        냉장고 재료 기반 추천을 불러오는 중이에요...
+                      </div>
                     )}
 
                     {!selectedLoading && priorityIngredientIds.length > 0 && selectedRecommendations.length === 0 && !selectedError && (
-                      <div className="rounded-[20px] bg-white px-4 py-10 text-center text-[13px] text-[#8B95A1] shadow-[0_2px_10px_rgba(0,0,0,0.02)]">선택한 재료로 만들 수 있는 레시피가 없어요.</div>
+                      <div className="rounded-[20px] bg-white px-5 py-8 text-center shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+                        <div className="text-[40px] mb-3">🔍</div>
+                        <p className="text-[14px] font-bold text-[#1A1F27]">선택한 재료 조합의 레시피가 없어요</p>
+                        <p className="mt-1 text-[12px] text-[#8B95A1]">다른 재료를 선택하거나 냉장고에 재료를 추가해보세요.</p>
+                        <button onClick={() => setCurrentTab('fridge')} className="mt-4 rounded-[16px] bg-[#18CA87] px-6 py-3 text-[13px] font-bold text-white shadow-md shadow-[#18CA87]/30 outline-none focus:outline-none">
+                          🥬 냉장고에 재료 추가하기
+                        </button>
+                      </div>
                     )}
 
                     {selectedRecommendations.map((recipe) => (
