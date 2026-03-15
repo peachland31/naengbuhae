@@ -360,32 +360,30 @@ def health():
 def get_ingredients(limit: int = 1000):
     """
     식재료 마스터 목록 반환
-    - App.tsx 필드명 호환: id→ingredient_id, name→ingredient_name
-    - 카테고리 정규화: DB값(수산물/과일류)→App.tsx값(해산물/과일)으로 변환
+    App.tsx는 ingredient_id, ingredient_name, category 필드를 기대하므로
+    새 컬럼명(id, name)을 기존 필드명으로 매핑하여 반환
     """
-    # DB 카테고리 → App.tsx CATEGORY_LIST 매핑
-    CATEGORY_MAP = {
-        "수산물": "해산물",   # DB는 수산물, 프론트는 해산물
-        "과일류": "과일",     # DB는 과일류, 프론트는 과일
-    }
-
     result = (
         ingredient_master[["id", "name", "category", "expiryDay", "unit", "allergy"]]
         .head(limit)
         .fillna("")
         .rename(columns={
-            "id":        "ingredient_id",
-            "name":      "ingredient_name",
+            "id":       "ingredient_id",    # App.tsx 호환
+            "name":     "ingredient_name",  # App.tsx 호환
             "expiryDay": "expiry_day",
         })
         .to_dict(orient="records")
     )
-
-    # 카테고리 정규화 적용
-    for item in result:
-        item["category"] = CATEGORY_MAP.get(item["category"], item["category"])
-
     return {"ingredients": result}
+
+
+class SelectedRecommendRequest(BaseModel):
+    selected_ingredient_ids: List[str]   # 선택한 재료 id 목록
+    household_size: int = 1
+    day_of_week: int = 0
+    hour: int = 19
+    allergies: List[str] = []
+    top_k: int = 10
 
 
 @app.post("/recommend")
@@ -396,3 +394,104 @@ def recommend(payload: RecommendRequest):
     출력: AIRecipeRecommendation[] + 보유/미보유 재료 상세
     """
     return recommend_top_k(payload)
+
+
+@app.post("/recommend/selected")
+def recommend_selected(payload: SelectedRecommendRequest):
+    """
+    선택 재료 기반 추천 전용 엔드포인트
+    - missing_main 페널티 없이 선택 재료 포함 비율 기준으로 정렬
+    - 선택 재료 중 하나라도 포함된 레시피를 모두 반환 (OR 조건)
+    - 포함된 선택 재료가 많을수록 상위 노출
+    """
+    # 선택 재료 id → name 변환
+    selected_names = []
+    for sid in payload.selected_ingredient_ids:
+        info = ing_by_id.get(sid)
+        if info:
+            selected_names.append(info["name"])
+
+    if not selected_names:
+        return []
+
+    selected_set = set(selected_names)
+
+    # 알레르기 하드 필터
+    filtered = recipes.copy()
+    if payload.allergies:
+        user_allergy_set = set(payload.allergies)
+        def has_allergy(x):
+            algs = set(x) if isinstance(x, list) and x else set()
+            return bool(algs & user_allergy_set)
+        filtered = filtered[~filtered["recipe_allergies"].apply(has_allergy)]
+
+    # 필수 재료 없는 레시피 제외
+    filtered = filtered[filtered["required_ingredients"].apply(lambda x: bool(x))]
+
+    if filtered.empty:
+        return []
+
+    # 선택 재료가 하나라도 포함된 레시피만 필터링 (OR 조건)
+    def contains_selected(req_list):
+        return any(name in selected_set for name in (req_list or []))
+
+    matched = filtered[filtered["required_ingredients"].apply(contains_selected)].copy()
+
+    if matched.empty:
+        return []
+
+    # 점수 계산: 선택 재료 중 몇 개가 레시피에 포함되는지 비율
+    def calc_match_score(row):
+        req = set(row["required_ingredients"] or [])
+        main = set(row["main_ingredients"] or [])
+        # 선택 재료 중 레시피에 있는 것
+        matched_selected = selected_set & req
+        # 메인 재료에 포함된 선택 재료에 가중치 2배
+        main_bonus = len(selected_set & main) * 2
+        return (len(matched_selected) + main_bonus) / max(len(selected_set), 1)
+
+    matched["_score"] = matched.apply(calc_match_score, axis=1)
+    top_df = matched.sort_values("_score", ascending=False).head(payload.top_k)
+
+    # TPO 연속값 계산
+    hour_score, weekend_score, weekday_dinner_score, late_night_score = compute_tpo_scores(
+        payload.hour, payload.day_of_week
+    )
+
+    # 응답 조립 — AI 추천과 동일한 포맷
+    results = []
+    for _, row in top_df.iterrows():
+        req_names  = row["required_ingredients"] or []
+        main_names = row["main_ingredients"] or []
+        sub_names  = [n for n in req_names if n not in set(main_names)]
+
+        # 선택 재료 기준으로 보유/미보유 구분
+        owned_main   = [n for n in main_names if n in selected_set]
+        missing_main = [n for n in main_names if n not in selected_set]
+        owned_sub    = [n for n in sub_names  if n in selected_set]
+        missing_sub  = [n for n in sub_names  if n not in selected_set]
+
+        match_rate = len(selected_set & set(req_names)) / max(len(req_names), 1)
+
+        results.append({
+            "recipe_id":            row["recipe_id"],
+            "title":                row["title"],
+            "pred_score":           round(float(row["_score"]), 4),
+            "level":                row.get("level", "보통"),
+            "timeMin":              float(row.get("timeMin", 30)),
+            "mood":                 row.get("mood", "실속 있는 한 끼"),
+            "main_match_ratio":     round(match_rate, 4),
+            "required_match_ratio": round(match_rate, 4),
+            "urgency_score":        0.0,
+            "consume_efficiency":   0.0,
+            "missing_required":     len(missing_sub),
+            "allergy_hit":          0,
+            "owned_main":           owned_main,
+            "missing_main_names":   missing_main,
+            "owned_sub":            owned_sub,
+            "missing_sub_names":    missing_sub,
+            "match_rate_pct":       round(match_rate * 100, 1),
+            "owned_qty_score":      0.5,
+        })
+
+    return results
