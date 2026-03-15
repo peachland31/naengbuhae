@@ -5,7 +5,7 @@ type Allergy = '우유' | '계란' | '땅콩' | '견과류' | '밀' | '대두' |
 type StorageType = '냉장' | '냉동' | '실온';
 type Status = '신선' | '보통' | '빠른 소비 필요';
 type Tab = 'onboarding' | 'home' | 'fridge' | 'recipe' | 'profile';
-type Category = '전체' | '육류' | '채소' | '유제품' | '과일' | '해산물' | '조미료' | '신선식품';
+type Category = '전체' | '육류' | '채소' | '해산물' | '과일' | '유제품' | '건어물' | '견과류' | '쌀' | '계란류' | '신선식품' | '통조림' | '조미료';
 type SortMode = 'expiry' | 'remainingRatio' | 'recent';
 type RecipeSortMode = 'match' | 'urgent' | 'recent';
 type RecipeRecommendTab = 'ai' | 'selected';
@@ -21,12 +21,20 @@ type AIRecipeRecommendation = {
   level: string;
   timeMin: number;
   mood: string;
+  // 기존 호환 필드
   main_match_ratio: number;
   required_match_ratio: number;
   urgency_score: number;
   consume_efficiency: number;
   missing_required: number;
   allergy_hit: number;
+  // 신규: 보유/미보유 재료 상세 (name 기반)
+  owned_main: string[];
+  missing_main_names: string[];
+  owned_sub: string[];
+  missing_sub_names: string[];
+  match_rate_pct: number;
+  owned_qty_score: number;
 };
 
 interface AppNotification {
@@ -119,7 +127,7 @@ const AVATARS: Avatar[] = [
 ];
 
 const ALLERGY_LIST: Allergy[] = ['우유', '계란', '땅콩', '견과류', '밀', '대두', '생선', '갑각류', '참깨'];
-const CATEGORY_LIST: Category[] = ['전체', '육류', '채소', '유제품', '과일', '해산물', '조미료', '신선식품'];
+const CATEGORY_LIST: Category[] = ['전체', '육류', '채소', '해산물', '과일', '유제품', '건어물', '견과류', '쌀', '계란류', '신선식품', '통조림', '조미료'];
 const HOUSEHOLD_CHIPS = [1, 2, 3, 4, 5] as const;
 const UNIT_OPTIONS = ['g', 'kg', 'ml', 'L', '개', '알', '모', '대', '봉', '팩', '캔', '송이', '마리'];
 
@@ -392,28 +400,35 @@ export default function App() {
 
   // 1. 식재료 마스터 상태
   const [masterIngredients, setMasterIngredients] = useState<any[]>([]);
+  const [ingredientsLoading, setIngredientsLoading] = useState(true);
+  const [ingredientsError, setIngredientsError] = useState('');
 
   // 2. 백엔드에서 데이터 불러오고 이모지 입히기
   useEffect(() => {
     const fetchMasterIngredients = async () => {
       try {
+        setIngredientsLoading(true);
+        setIngredientsError('');
         const res = await fetch(`${API_BASE_URL}/ingredients?limit=1000`);
-        
+        if (!res.ok) throw new Error(`서버 오류: ${res.status}`);
         const data = await res.json();
-        
-        // 백엔드 데이터를 프론트엔드 인터페이스에 맞게 매핑 (이모지 추가)
+        if (!data.ingredients || data.ingredients.length === 0) {
+          throw new Error('식재료 목록이 비어있습니다.');
+        }
         const mappedIngredients = data.ingredients.map((item: any) => ({
-          id: item.ingredient_id,
-          name: item.ingredient_name,
-          category: item.category,
-          emoji: getIngredientEmoji(item.category, item.ingredient_name), // 여기서 이모지 함수 사용!
-          expiryDay: 7, // 기본 소비기한
-          unit: 'g' // 기본 단위
+          id:        item.ingredient_id,
+          name:      item.ingredient_name,
+          category:  item.category,
+          emoji:     getIngredientEmoji(item.category, item.ingredient_name),
+          expiryDay: item.expiry_day || 7,
+          unit:      item.unit      || 'g',
         }));
-        
         setMasterIngredients(mappedIngredients);
-      } catch (error) {
+      } catch (error: any) {
         console.error("Failed to fetch ingredients:", error);
+        setIngredientsError(error.message || '식재료를 불러오지 못했습니다.');
+      } finally {
+        setIngredientsLoading(false);
       }
     };
     fetchMasterIngredients();
@@ -591,30 +606,27 @@ export default function App() {
     setAiLoading(true);
     setAiError('');
 
-    const now = new Date();
-    // 백엔드는 0(월요일)~6(일요일)을 기대할 확률이 높습니다. 
-    // 현재 index.py는 전처리 로직에 따라 다르지만 보통 0~6 범위를 사용합니다.
-    const dayOfWeek = now.getDay(); 
+    const now       = new Date();
+    const dayOfWeek = now.getDay();  // 0=일, 1=월 ... 6=토 (JS 기본값 그대로 전송)
 
     const inventoryPayload = inventory.map((item) => ({
-      // 중요: 백엔드 스키마는 'ingredient_id' (언더바)를 사용합니다.
-      ingredient_id: String(item.ingredientId), 
-      owned_qty: Number(item.quantity),
-      days_left: calculateDaysLeft(item.expiryDate),
+      ingredient_id: String(item.ingredientId),
+      owned_qty:     Number(item.quantity),     // 보유 수량 → owned_qty_score 계산에 활용
+      days_left:     calculateDaysLeft(item.expiryDate),
     }));
 
     const response = await fetch(`${API_BASE_URL}/recommend`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        household_size: profile.householdSize,
-        day_of_week: dayOfWeek,
-        hour: now.getHours(),
-        allergies: profile.allergies,
-        preferred_moods: [],
+        household_size:       profile.householdSize,
+        day_of_week:          dayOfWeek,
+        hour:                 now.getHours(),
+        allergies:            profile.allergies,
+        preferred_moods:      [],
         inventory_confidence: 0.9,
-        top_k: 10,
-        inventory: inventoryPayload, // 매핑된 데이터를 보냅니다.
+        top_k:                10,
+        inventory:            inventoryPayload,
       }),
     });
 
@@ -1116,7 +1128,7 @@ export default function App() {
           </nav>
         )}
 
-        {isAddSheetOpen && <AddIngredientSheet masterIngredients={masterIngredients} onClose={() => setIsAddSheetOpen(false)} onAdd={(item) => { setInventory((prev) => [item, ...prev]); setIsAddSheetOpen(false); }} />}
+        {isAddSheetOpen && <AddIngredientSheet masterIngredients={masterIngredients} ingredientsLoading={ingredientsLoading} ingredientsError={ingredientsError} onClose={() => setIsAddSheetOpen(false)} onAdd={(item) => { setInventory((prev) => [item, ...prev]); setIsAddSheetOpen(false); }} />}
         {isInventoryDetailOpen && selectedInventory && <InventoryDetailModal item={selectedInventory} onClose={() => setIsInventoryDetailOpen(false)} onSave={handleSaveInventory} />}
         {selectedRecipe && <RecipeDetailModal recipe={selectedRecipe} inventory={inventory} householdSize={profile.householdSize} onClose={() => setSelectedRecipeId(null)} onComplete={handleCompleteRecipe} />}
         {isNotiOpen && <NotificationModal notifications={notifications} onClose={() => setIsNotiOpen(false)} onMarkRead={handleMarkNotiRead} />}
@@ -1178,7 +1190,7 @@ function SimpleUnitSelect({ value, onChange }: { value: string; onChange: (value
   );
 }
 
-function AddIngredientSheet({ masterIngredients, onClose, onAdd }: { masterIngredients: any[]; onClose: () => void; onAdd: (item: InventoryItem) => void }) {
+function AddIngredientSheet({ masterIngredients, ingredientsLoading, ingredientsError, onClose, onAdd }: { masterIngredients: any[]; ingredientsLoading: boolean; ingredientsError: string; onClose: () => void; onAdd: (item: InventoryItem) => void }) {
   const [ingredientQuery, setIngredientQuery] = useState('');
   const [selectedIngredient, setSelectedIngredient] = useState<any | null>(null);
   const [quantity, setQuantity] = useState(1);
@@ -1235,7 +1247,14 @@ function AddIngredientSheet({ masterIngredients, onClose, onAdd }: { masterIngre
             />
             {/* ⭐️ 여기에 백엔드에서 매핑된 재료 목록이 렌더링 됩니다! */}
             <div className={`mt-2 max-h-40 overflow-y-auto space-y-1.5 ${hideScroll}`}>
-              {filteredIngredients.map((item) => {
+              {ingredientsLoading ? (
+                <div className="py-4 text-center text-[13px] text-[#8B95A1]">식재료 불러오는 중...</div>
+              ) : ingredientsError ? (
+                <div className="py-4 text-center text-[13px] text-[#F04438]">{ingredientsError}</div>
+              ) : filteredIngredients.length === 0 ? (
+                <div className="py-4 text-center text-[13px] text-[#8B95A1]">검색 결과가 없어요.</div>
+              ) : null}
+              {!ingredientsLoading && !ingredientsError && filteredIngredients.map((item) => {
                 const active = selectedIngredient?.id === item.id;
                 return (
                   <button

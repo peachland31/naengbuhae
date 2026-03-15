@@ -1,3 +1,16 @@
+"""
+냉부해 레시피 추천 API — v2
+=====================================
+새 모델(15개 피처) 기준으로 전면 재작성
+- 재료 매칭: ingredient_id → ingredient_name 기반
+- 피처: missing_main/sub, match_rate, has_all_main, ingredient_waste_score,
+        avg_urgency, absolute_volume, urgency_x_volume, owned_qty_score,
+        time_min, difficulty_num,
+        hour_score, weekend_score, weekday_dinner_score, late_night_score
+- 응답 포맷: App.tsx 기존 인터페이스와 호환 유지
+"""
+
+import re
 from typing import List, Optional
 from pathlib import Path
 
@@ -8,27 +21,52 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# index.py 상단 (BASE_DIR 설정 부분 아래에 덮어쓰기)
-BASE_DIR = Path(__file__).resolve().parent
-MODEL_DIR = BASE_DIR / "models"
+# ── 경로 설정 ────────────────────────────────────────────────
+BASE_DIR   = Path(__file__).resolve().parent
+MODEL_DIR  = BASE_DIR / "models"
 
-# 경로 변수들 정의 (RECIPE_ITEMS_PATH 누락 해결)
-MODEL_PATH = MODEL_DIR / "fridge_recipe_recommender.pkl"
-RECIPES_PATH = MODEL_DIR / "recipes_df.pkl"
-INGREDIENT_MASTER_PATH = MODEL_DIR / "ingredient_master.pkl"
-RECIPE_ITEMS_PATH = MODEL_DIR / "recipe_items_df.pkl"  # <-- 이 줄이 꼭 있어야 합니다!
+MODEL_PATH      = MODEL_DIR / "fridge_recipe_xgboost_v2.pkl"
+RECIPES_PATH    = MODEL_DIR / "recipes_df.pkl"
+INGREDIENT_PATH = MODEL_DIR / "ingredients_master.pkl"
 
-# 디버깅 로그
-print(f"DEBUG: Looking for models in: {MODEL_DIR}")
-print(f"DEBUG: Master file exists? {INGREDIENT_MASTER_PATH.exists()}")
+print(f"DEBUG: MODEL_DIR = {MODEL_DIR}")
+print(f"DEBUG: model exists?       {MODEL_PATH.exists()}")
+print(f"DEBUG: recipes exists?     {RECIPES_PATH.exists()}")
+print(f"DEBUG: ingredients exists? {INGREDIENT_PATH.exists()}")
 
-# 모델 및 데이터 로드 (변수명 오타 주의)
-model = joblib.load(MODEL_PATH)
-recipes = pd.read_pickle(RECIPES_PATH)
-ingredient_master = pd.read_pickle(INGREDIENT_MASTER_PATH)
-recipe_items_df = pd.read_pickle(RECIPE_ITEMS_PATH)
+# ── 데이터 로드 ──────────────────────────────────────────────
+model              = joblib.load(MODEL_PATH)
+recipes            = pd.read_pickle(RECIPES_PATH)
+ingredient_master  = pd.read_pickle(INGREDIENT_PATH)
 
-app = FastAPI(title="Naengbuhae Recommendation API")
+# 빠른 조회용 딕셔너리
+# id → {name, category, expiryDay, unit, allergy}
+ing_by_id   = ingredient_master.set_index("id").to_dict("index")
+# name → id (역방향 조회용)
+ing_id_by_name = {row["name"]: row["id"] for _, row in ingredient_master.iterrows()}
+
+print(f"✅ 로드 완료: 레시피 {len(recipes)}건 / 식재료 마스터 {len(ingredient_master)}건")
+
+# ── 피처 컬럼 정의 (학습 시와 동일한 순서 유지 필수) ────────
+FEATURE_COLS = [
+    "missing_main", "missing_sub", "match_rate", "has_all_main",
+    "ingredient_waste_score",
+    "avg_urgency", "absolute_volume", "urgency_x_volume", "owned_qty_score",
+    "time_min", "difficulty_num",
+    "hour_score", "weekend_score", "weekday_dinner_score", "late_night_score",
+]
+
+# ── CONDIMENT_KEYWORDS (조미료 제외용) ──────────────────────
+CONDIMENT_KEYWORDS = {
+    "소금", "후추", "설탕", "간장", "식초", "된장", "고추장", "쌈장", "맛술", "미림",
+    "올리고당", "물엿", "다진마늘", "마늘가루", "양파가루", "고춧가루", "고추기름",
+    "참기름", "들기름", "올리브오일", "식용유", "버터", "케첩", "마요네즈", "머스타드",
+    "굴소스", "피시소스", "치킨스톡", "육수", "다시다", "카레가루", "짜장가루", "전분",
+    "밀가루", "토마토소스", "크림소스", "데리야키소스", "칠리소스", "파슬리", "월계수잎"
+}
+
+# ── FastAPI 앱 설정 ──────────────────────────────────────────
+app = FastAPI(title="냉부해 레시피 추천 API v2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,336 +76,323 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 모델 및 데이터 로드
-model = joblib.load(MODEL_PATH)
-recipes = pd.read_pickle(RECIPES_PATH)
-ingredient_master = pd.read_pickle(INGREDIENT_MASTER_PATH)
-recipe_items_df = pd.read_pickle(RECIPE_ITEMS_PATH)
 
-
-# --- [Pydantic 스키마 정의] ---
+# ── Pydantic 스키마 ──────────────────────────────────────────
 class InventoryItem(BaseModel):
+    """
+    냉장고 재료 1개 항목
+    - ingredient_id: 마스터 DB의 id (기존 App.tsx 호환)
+    - owned_qty: 보유 수량 (선택, 없으면 None → owned_qty_score = 0.5 중립값)
+    - days_left: 유통기한까지 남은 일수
+    """
     ingredient_id: str
-    owned_qty: float
+    owned_qty: Optional[float] = None
     days_left: int
 
 class RecommendRequest(BaseModel):
     household_size: int = 1
-    day_of_week: int = 0
+    day_of_week: int = 0        # 0=월 ~ 6=일 (App.tsx에서 now.getDay() 전송)
     hour: int = 19
     allergies: List[str] = []
     preferred_moods: List[str] = []
-    inventory_confidence: float = 0.9
+    inventory_confidence: float = 0.9   # 하위 호환용 (현재 모델에서 미사용)
     top_k: int = 10
     inventory: List[InventoryItem]
 
-class SelectedRecommendRequest(BaseModel):
-    selected_ingredient_ids: List[str]
-    household_size: int = 1
 
-# --- [신규 API: 식재료 마스터 목록] ---
-@app.get("/ingredients")
-def get_ingredients(limit: int = 100):
-    # ingredient_master 데이터프레임에서 필요한 컬럼만 추출하여 반환
-    # 결측치 처리 및 딕셔너리 변환
-    ingredients = ingredient_master[['ingredient_id', 'ingredient_name', 'category']].head(limit).fillna("").to_dict(orient="records")
-    return {"ingredients": ingredients}
-
-# (NEW) 프론트엔드에 내려줄 식재료 계량 정보 스키마
-class AdjustedIngredient(BaseModel):
-    ingredient_id: str
-    adjusted_quantity: float
-    unit: str
-    is_seasoning: bool
-
-class RecipeRecommendation(BaseModel):
-    recipe_id: str
-    title: str
-    pred_score: float
-    level: Optional[str] = None
-    timeMin: Optional[float] = None
-    mood: Optional[str] = None
-    main_match_ratio: float
-    required_match_ratio: float
-    urgency_score: float
-    consume_efficiency: float
-    missing_required: int
-    allergy_hit: int
-    adjusted_ingredients: List[AdjustedIngredient] = [] # (NEW) 응답에 추가됨
+# ── 헬퍼: 소모량 계산 (raw_ingredients 텍스트에서 g 파싱) ───
+def calculate_absolute_volume(matched_names: list, raw_text: str) -> float:
+    """냉장고에 있는 재료만 기준으로 소모량을 0~1로 정규화"""
+    total_g = 0.0
+    chunks  = str(raw_text).split(',')
+    UNIT_TO_G = {
+        'kg': 1000, '큰술': 15, 'T': 15, '작은술': 5, 't': 5,
+        '컵': 200, '개': 150, '뿌리': 50, '톨': 5, '쪽': 5, '마리': 300, '장': 10,
+    }
+    for ing in matched_names:
+        chunk = next((c for c in chunks if ing in c), "")
+        if not chunk:
+            continue
+        num_m  = re.search(r'(\d+(?:\.\d+)?|\d+/\d+)', chunk)
+        unit_m = re.search(r'(g|kg|ml|컵|큰술|작은술|T|t|개|뿌리|톨|쪽|마리|장)', chunk)
+        if not num_m:
+            continue
+        num_str = num_m.group(1)
+        val     = (float(num_str.split('/')[0]) / float(num_str.split('/')[1])
+                   if '/' in num_str else float(num_str))
+        unit    = unit_m.group(1) if unit_m else ""
+        val    *= UNIT_TO_G.get(unit, 1)
+        total_g += val
+    return min(1.0, total_g / 1000.0)
 
 
-# --- [핵심 로직 함수] ---
-def context_flags(context):
-    dow = context["day_of_week"]
-    hour = context["hour"]
-    is_weekend = int(dow >= 5)
-    is_weekday_dinner = int(dow < 5 and 18 <= hour <= 21)
-    is_late_night = int(hour >= 22 or hour <= 5)
-    return is_weekend, is_weekday_dinner, is_late_night
+# ── 헬퍼: TPO 연속값 계산 ───────────────────────────────────
+def compute_tpo_scores(hour: int, day_of_week: int):
+    """
+    시간/요일을 0.0~1.0 연속값으로 변환
+    day_of_week: 0=월 ~ 6=일 (JS getDay()는 0=일이지만 index.py에서 그대로 받음)
+    """
+    # JS getDay(): 0=일, 1=월 ... 6=토
+    is_weekend = day_of_week == 0 or day_of_week == 6
 
-
-def compute_features_for_pair(recipe_row, recipe_items_df, inventory_df, context):
-    recipe_id = recipe_row["id"]
-    sub = recipe_items_df[recipe_items_df["recipe_id"] == recipe_id].copy()
-
-    inv_ids = set(inventory_df["ingredient_id"].astype(str).tolist())
-    inv_map = inventory_df.set_index("ingredient_id").to_dict("index") if len(inventory_df) else {}
-
-    all_ing = recipe_row["all_ingredient_ids"] or []
-    main_ing = recipe_row["main_ingredient_ids"] or []
-    req_ing = recipe_row["required_ingredient_ids"] or []
-    seasoning_ing = recipe_row["seasoning_ingredient_ids"] or []
-
-    matched_main = sum(1 for iid in main_ing if iid in inv_ids)
-    matched_required = sum(1 for iid in req_ing if iid in inv_ids)
-    matched_all = sum(1 for iid in all_ing if iid in inv_ids)
-    matched_seasoning = sum(1 for iid in seasoning_ing if iid in inv_ids)
-
-    main_match_ratio = matched_main / max(1, len(main_ing))
-    required_match_ratio = matched_required / max(1, len(req_ing))
-    overall_match_ratio = matched_all / max(1, len(all_ing))
-    seasoning_match_ratio = matched_seasoning / max(1, len(seasoning_ing)) if len(seasoning_ing) else 1.0
-
-    missing_required = max(0, len(req_ing) - matched_required)
-    missing_main = max(0, len(main_ing) - matched_main)
-
-    enough_qty_count = 0
-    partial_qty_count = 0
-    urgency_scores = []
-    consumption_eff_list = []
-
-    for _, row in sub.iterrows():
-        iid = str(row["ingredient_id"])
-        # 가구원 수를 반영하여 내가 가진 재료가 충분한지 확인
-        req_qty = float(row["base_quantity"]) * context["household_size"]
-
-        if iid in inv_map:
-            owned_qty = float(inv_map[iid]["owned_qty"])
-            days_left = int(inv_map[iid]["days_left"])
-
-            if owned_qty >= req_qty:
-                enough_qty_count += 1
-            elif owned_qty > 0:
-                partial_qty_count += 1
-
-            if not bool(row["is_seasoning"]):
-                urgency_scores.append(1.0 / (max(days_left, 0) + 1.0))
-                consumption_eff_list.append(min(req_qty / max(owned_qty, 1e-6), 1.0))
-        else:
-            if not bool(row["is_seasoning"]):
-                urgency_scores.append(0.0)
-                consumption_eff_list.append(0.0)
-
-    quantity_sufficiency_ratio = enough_qty_count / max(1, len(req_ing))
-    partial_coverage_ratio = (enough_qty_count + 0.5 * partial_qty_count) / max(1, len(req_ing))
-    urgency_score = float(np.mean(urgency_scores)) if urgency_scores else 0.0
-    consume_efficiency = float(np.mean(consumption_eff_list)) if consumption_eff_list else 0.0
-
-    # (수정) 하드 필터링을 거쳤으므로 allergy_hit은 사실상 0이 되지만, 피처 구성을 위해 남겨둠
-    recipe_allergies = set(recipe_row.get("recipe_allergies", []) or [])
-    user_allergies = set(context["allergies"] or [])
-    allergy_hit = int(len(recipe_allergies.intersection(user_allergies)) > 0)
-
-    is_weekend, is_weekday_dinner, is_late_night = context_flags(context)
-    easy_bonus = 1.0 if recipe_row["difficulty_num"] <= 1 else 0.0
-    quick_bonus = 1.0 if float(recipe_row["timeMin"]) <= 20 else 0.0
-
-    if is_weekday_dinner:
-        context_fit = 0.6 * quick_bonus + 0.4 * easy_bonus
-    elif is_weekend:
-        context_fit = 0.5 + 0.2 * int(recipe_row["difficulty_num"] <= 2)
-    elif is_late_night:
-        context_fit = 1.0 if float(recipe_row["timeMin"]) <= 15 else 0.2
+    # hour_score: 저녁/야식 활성도
+    if 22 <= hour <= 23:
+        hour_score = round(0.5 + (hour - 22) * 0.25, 2)
+    elif 0 <= hour <= 2:
+        hour_score = 1.0
+    elif hour == 3:
+        hour_score = 0.7
+    elif hour == 4:
+        hour_score = 0.4
+    elif hour == 18:
+        hour_score = 0.4
+    elif hour == 19:
+        hour_score = 0.7
+    elif hour == 20:
+        hour_score = 1.0
+    elif hour == 21:
+        hour_score = 0.6
     else:
-        context_fit = 0.5 * quick_bonus + 0.5 * easy_bonus
+        hour_score = 0.1
 
-    mood_pref = 1.0 if str(recipe_row.get("mood", "")) in (context["preferred_moods"] or []) else 0.0
+    # weekend_score
+    weekend_score = 1.0 if is_weekend else 0.0
+
+    # weekday_dinner_score
+    if is_weekend:
+        weekday_dinner_score = 0.0
+    else:
+        weekday_dinner_score = {18: 0.4, 19: 0.8, 20: 1.0, 21: 0.6}.get(hour, 0.0)
+
+    # late_night_score
+    if 22 <= hour <= 23:
+        late_night_score = round(0.4 + (hour - 22) * 0.3, 2)
+    elif 0 <= hour <= 2:
+        late_night_score = 1.0
+    elif hour == 3:
+        late_night_score = 0.6
+    elif hour == 4:
+        late_night_score = 0.2
+    else:
+        late_night_score = 0.0
+
+    return hour_score, weekend_score, weekday_dinner_score, late_night_score
+
+
+# ── 핵심 피처 추출 함수 ──────────────────────────────────────
+def extract_features(recipe_row: dict, fridge_map: dict, hour: int, day_of_week: int) -> dict:
+    """
+    fridge_map: {ingredient_name: {days_left, owned_qty}} 형태
+    recipe_row: recipes_df의 row (dict)
+    """
+    req_ing  = recipe_row.get("required_ingredients", []) or []
+    main_ing = recipe_row.get("main_ingredients", []) or []
+
+    def in_fridge(name: str) -> bool:
+        return name in fridge_map
+
+    # 매칭 집합
+    matched_main_set = {i for i in main_ing if in_fridge(i)}
+    sub_ing          = [i for i in req_ing if i not in set(main_ing)]
+    matched_sub_set  = {i for i in sub_ing if in_fridge(i)}
+
+    missing_main = len(main_ing) - len(matched_main_set)
+    missing_sub  = len(sub_ing)  - len(matched_sub_set)
+    has_all_main = 1 if missing_main == 0 else 0
+
+    total_matched = len(matched_main_set) + len(matched_sub_set)
+    match_rate    = (total_matched / len(req_ing)) if req_ing else 0.0
+
+    # 냉장고 소진율
+    fridge_count          = len(fridge_map) if fridge_map else 1
+    fridge_used_count     = sum(1 for name in fridge_map if name in set(req_ing))
+    ingredient_waste_score = fridge_used_count / fridge_count
+
+    # 임박도 — 냉장고 보유 재료 기준
+    urgency_scores = []
+    for i in req_ing:
+        item = fridge_map.get(i)
+        if item:
+            score = max(0.0, (7.0 - item["days_left"]) / 7.0)
+            urgency_scores.append(score)
+    avg_urgency = float(np.mean(urgency_scores)) if urgency_scores else 0.0
+
+    # 소모량 — 냉장고 보유 재료만 기준
+    matched_list          = list(matched_main_set | matched_sub_set)
+    absolute_volume_score = calculate_absolute_volume(matched_list, recipe_row.get("raw_ingredients", ""))
+    urgency_x_volume      = avg_urgency * absolute_volume_score
+
+    # 남은양 충족도
+    qty_scores = []
+    for i in req_ing:
+        item = fridge_map.get(i)
+        if item and item.get("owned_qty") is not None:
+            owned = float(item["owned_qty"])
+            chunks = str(recipe_row.get("raw_ingredients", "")).split(',')
+            chunk  = next((c for c in chunks if i in c), "")
+            num_m  = re.search(r'(\d+(?:\.\d+)?)', chunk)
+            if num_m:
+                required_g = float(num_m.group(1))
+                if 'kg' in chunk:
+                    required_g *= 1000
+                qty_scores.append(min(1.0, owned / max(required_g, 1.0)))
+    owned_qty_score = float(np.mean(qty_scores)) if qty_scores else 0.5
+
+    # TPO 연속값
+    hour_score, weekend_score, weekday_dinner_score, late_night_score = compute_tpo_scores(hour, day_of_week)
 
     return {
-        "recipe_id": recipe_id,
-        "household_size": context["household_size"],
-        "hour": context["hour"],
-        "day_of_week": context["day_of_week"],
-        "is_weekend": is_weekend,
-        "is_weekday_dinner": is_weekday_dinner,
-        "inventory_confidence": context["inventory_confidence"],
-        "time_min": float(recipe_row["timeMin"]),
-        "difficulty_num": float(recipe_row["difficulty_num"]),
-        "recipe_num_ingredients": len(all_ing),
-        "recipe_num_required_ingredients": len(req_ing),
-        "recipe_num_main_ingredients": len(main_ing),
-        "main_match_ratio": main_match_ratio,
-        "required_match_ratio": required_match_ratio,
-        "overall_match_ratio": overall_match_ratio,
-        "seasoning_match_ratio": seasoning_match_ratio,
-        "missing_required": missing_required,
-        "missing_main": missing_main,
-        "quantity_sufficiency_ratio": quantity_sufficiency_ratio,
-        "partial_coverage_ratio": partial_coverage_ratio,
-        "urgency_score": urgency_score,
-        "consume_efficiency": consume_efficiency,
-        "total_consumed_ratio": 0.0,
-        "expired_count": 0,
-        "soon_expiring_count": 0,
-        "allergy_hit": allergy_hit,
-        "context_fit": context_fit,
-        "mood_pref": mood_pref,
+        "missing_main":           missing_main,
+        "missing_sub":            missing_sub,
+        "match_rate":             round(match_rate, 4),
+        "has_all_main":           has_all_main,
+        "ingredient_waste_score": round(ingredient_waste_score, 4),
+        "avg_urgency":            round(avg_urgency, 4),
+        "absolute_volume":        round(absolute_volume_score, 4),
+        "urgency_x_volume":       round(urgency_x_volume, 4),
+        "owned_qty_score":        round(owned_qty_score, 4),
+        "time_min":               float(recipe_row.get("timeMin", 30)),
+        "difficulty_num":         float(recipe_row.get("difficulty_num", 2.0)),
+        "hour_score":             hour_score,
+        "weekend_score":          weekend_score,
+        "weekday_dinner_score":   weekday_dinner_score,
+        "late_night_score":       late_night_score,
     }
 
 
-def recommend_top_k(payload: RecommendRequest):
-    inventory_df = pd.DataFrame([item.model_dump() for item in payload.inventory])
-    if len(inventory_df) > 0:
-        inventory_df["ingredient_id"] = inventory_df["ingredient_id"].astype(str)
-        inventory_df = inventory_df.merge(
-            ingredient_master[["ingredient_id", "is_seasoning", "allergy", "expiry_day", "unit"]],
-            on="ingredient_id",
-            how="left"
-        )
-        inventory_df["is_seasoning"] = inventory_df["is_seasoning"].fillna(False)
+# ── 추천 핵심 로직 ───────────────────────────────────────────
+def recommend_top_k(payload: RecommendRequest) -> list:
 
-    context = {
-        "household_size": payload.household_size,
-        "day_of_week": payload.day_of_week,
-        "hour": payload.hour,
-        "preferred_moods": payload.preferred_moods,
-        "allergies": payload.allergies,
-        "inventory_confidence": payload.inventory_confidence,
-    }
+    # 1. 냉장고 재료를 name 기반 맵으로 변환
+    # App.tsx는 ingredient_id로 보내므로 → id를 name으로 변환
+    fridge_map = {}
+    for item in payload.inventory:
+        ing_info = ing_by_id.get(item.ingredient_id)
+        if not ing_info:
+            continue
+        name = ing_info["name"]
+        fridge_map[name] = {
+            "days_left": item.days_left,
+            "owned_qty": item.owned_qty,
+        }
 
-    # --- [1단계 로직: 알레르기 하드 필터링 적용] ---
-    filtered_recipes = recipes.copy()
+    # 2. 알레르기 하드 필터
+    filtered = recipes.copy()
     if payload.allergies:
-        user_allergies_set = set(payload.allergies)
-        
+        user_allergy_set = set(payload.allergies)
         def has_allergy(x):
-            recipe_algs = set(x) if isinstance(x, (list, np.ndarray)) and x is not None else set()
-            return len(recipe_algs.intersection(user_allergies_set)) > 0
-            
-        # 교집합이 없는(알레르기가 안 겹치는) 레시피만 필터링
-        safe_mask = ~filtered_recipes["recipe_allergies"].apply(has_allergy)
-        filtered_recipes = filtered_recipes[safe_mask]
+            algs = set(x) if isinstance(x, list) and x else set()
+            return bool(algs & user_allergy_set)
+        filtered = filtered[~filtered["recipe_allergies"].apply(has_allergy)]
 
-    # --- [2단계 로직: 모델 추론 및 랭킹] ---
+    # 3. 필수 재료 없는 레시피 제외
+    filtered = filtered[filtered["required_ingredients"].apply(lambda x: bool(x))]
+
+    if filtered.empty:
+        return []
+
+    # 4. 피처 추출 + 모델 추론
     rows = []
-    for _, recipe_row in filtered_recipes.iterrows():
-        rows.append(compute_features_for_pair(recipe_row, recipe_items_df, inventory_df, context))
-
-    if not rows:
-        return [] # 필터링 결과 추천할 레시피가 없는 경우 빈 리스트 반환
+    for _, row in filtered.iterrows():
+        feat = extract_features(row.to_dict(), fridge_map, payload.hour, payload.day_of_week)
+        feat["recipe_id"] = row["recipe_id"]
+        rows.append(feat)
 
     feat_df = pd.DataFrame(rows)
-    feature_cols = [c for c in feat_df.columns if c != "recipe_id"]
-    feat_df["pred_score"] = np.clip(model.predict(feat_df[feature_cols]), 0, 1)
+    feat_df["pred_score"] = np.clip(
+        model.predict_proba(feat_df[FEATURE_COLS])[:, 1], 0, 1
+    )
 
-    out = feat_df.merge(
-        recipes[["id", "title", "level", "timeMin", "mood"]],
-        left_on="recipe_id",
-        right_on="id",
-        how="left"
-    ).sort_values("pred_score", ascending=False).head(payload.top_k)
+    # 5. 상위 k개 선택
+    top_df = feat_df.sort_values("pred_score", ascending=False).head(payload.top_k)
 
-    top_k_list = out[[
-        "recipe_id", "title", "pred_score", "level", "timeMin", "mood",
-        "main_match_ratio", "required_match_ratio", "urgency_score",
-        "consume_efficiency", "missing_required", "allergy_hit"
-    ]].to_dict(orient="records")
+    # 6. 응답 조립 — App.tsx의 AIRecipeRecommendation 인터페이스에 맞게
+    results = []
+    for _, feat_row in top_df.iterrows():
+        rid    = feat_row["recipe_id"]
+        recipe = filtered[filtered["recipe_id"] == rid].iloc[0]
 
-    # --- [3단계 로직: 계량 조정 (후처리)] ---
-    # ingredient_master에서 unit 정보를 빠르게 매핑하기 위한 딕셔너리 생성
-    unit_map = ingredient_master.set_index("ingredient_id")["unit"].to_dict()
+        # 보유/미보유 재료 분리
+        req_names  = recipe["required_ingredients"] or []
+        main_names = recipe["main_ingredients"] or []
+        sub_names  = [n for n in req_names if n not in set(main_names)]
 
-    final_response = []
-    for recipe in top_k_list:
-        # 해당 레시피의 원본 재료 데이터(1인분/기본 분량 기준) 로드
-        items = recipe_items_df[recipe_items_df["recipe_id"] == recipe["recipe_id"]]
-        
-        adjusted_ings = []
-        for _, item in items.iterrows():
-            iid = str(item["ingredient_id"])
-            base_qty = float(item["base_quantity"])
-            
-            # 가구원 수에 따른 실수량 연산 처리
-            adjusted_qty = round(base_qty * payload.household_size, 2)
-            
-            adjusted_ings.append({
-                "ingredient_id": iid,
-                "adjusted_quantity": adjusted_qty,
-                "unit": str(unit_map.get(iid, "")), # 마스터 DB에서 단위 맵핑
-                "is_seasoning": bool(item["is_seasoning"])
-            })
-            
-        recipe["adjusted_ingredients"] = adjusted_ings
-        final_response.append(recipe)
+        owned_main    = [n for n in main_names if n in fridge_map]
+        missing_main  = [n for n in main_names if n not in fridge_map]
+        owned_sub     = [n for n in sub_names  if n in fridge_map]
+        missing_sub   = [n for n in sub_names  if n not in fridge_map]
 
-    return final_response
+        # App.tsx 호환 필드 + 신규 필드
+        results.append({
+            # ── 기존 App.tsx AIRecipeRecommendation 인터페이스 호환 ──
+            "recipe_id":            rid,
+            "title":                recipe["title"],
+            "pred_score":           round(float(feat_row["pred_score"]), 4),
+            "level":                recipe.get("level", "보통"),
+            "timeMin":              float(recipe.get("timeMin", 30)),
+            "mood":                 recipe.get("mood", "실속 있는 한 끼"),
+            "main_match_ratio":     round(feat_row["match_rate"], 4),       # 호환 필드명 유지
+            "required_match_ratio": round(feat_row["match_rate"], 4),
+            "urgency_score":        round(feat_row["avg_urgency"], 4),
+            "consume_efficiency":   round(feat_row["absolute_volume"], 4),
+            "missing_required":     int(feat_row["missing_sub"]),
+            "allergy_hit":          0,   # 하드필터 통과한 레시피는 항상 0
 
-# --- [라우터 정의] ---
+            # ── 신규 필드: 보유/미보유 재료 상세 ──────────────────
+            "owned_main":           owned_main,
+            "missing_main_names":   missing_main,
+            "owned_sub":            owned_sub,
+            "missing_sub_names":    missing_sub,
+            "match_rate_pct":       round(feat_row["match_rate"] * 100, 1),
+            "owned_qty_score":      round(feat_row["owned_qty_score"], 4),
+        })
+
+    return results
+
+
+# ── 엔드포인트 ───────────────────────────────────────────────
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "recipes": len(recipes), "ingredients": len(ingredient_master)}
+
+
+@app.get("/ingredients")
+def get_ingredients(limit: int = 1000):
+    """
+    식재료 마스터 목록 반환
+    - App.tsx 필드명 호환: id→ingredient_id, name→ingredient_name
+    - 카테고리 정규화: DB값(수산물/과일류)→App.tsx값(해산물/과일)으로 변환
+    """
+    # DB 카테고리 → App.tsx CATEGORY_LIST 매핑
+    CATEGORY_MAP = {
+        "수산물": "해산물",   # DB는 수산물, 프론트는 해산물
+        "과일류": "과일",     # DB는 과일류, 프론트는 과일
+    }
+
+    result = (
+        ingredient_master[["id", "name", "category", "expiryDay", "unit", "allergy"]]
+        .head(limit)
+        .fillna("")
+        .rename(columns={
+            "id":        "ingredient_id",
+            "name":      "ingredient_name",
+            "expiryDay": "expiry_day",
+        })
+        .to_dict(orient="records")
+    )
+
+    # 카테고리 정규화 적용
+    for item in result:
+        item["category"] = CATEGORY_MAP.get(item["category"], item["category"])
+
+    return {"ingredients": result}
+
 
 @app.post("/recommend")
 def recommend(payload: RecommendRequest):
-    recommendations = recommend_top_k(payload)
-
-    detailed_results = []
-    for rec in recommendations:
-        recipe_detail = recipes[recipes["id"] == rec["recipe_id"]].iloc[0]
-        items = recipe_items_df[
-            recipe_items_df["recipe_id"] == rec["recipe_id"]
-        ].to_dict(orient="records")
-
-        rec_dict = dict(rec)
-        rec_dict["steps"] = recipe_detail.get("steps", [])
-        rec_dict["sauce"] = recipe_detail.get("sauce", [])
-        rec_dict["items"] = items
-        detailed_results.append(rec_dict)
-
-    return detailed_results
-
-
-# --- [신규 API: 수동 선택 추천 (OR 조건)] ---
-""" @app.post("/recommend/selected")
-def recommend_by_selected(payload: SelectedRecommendRequest):
-    # ... (기존 1~4번 로직 동일) ...
-
-    # 5. 프론트엔드 반환 포맷으로 변환 (상세 정보 필드 추가)
-    # 6. 각 레시피의 전체 재료 목록도 포함시켜야 상세 모달에서 정상 작동합니다.
-    final_list = []
-    for _, row in matched_recipes.iterrows():
-        r_id = row['recipe_id']
-        items = recipe_items_df[recipe_items_df['recipe_id'] == r_id].to_dict(orient='records')
-        
-        recipe_dict = row.to_dict()
-        recipe_dict['items'] = items
-        # row에 이미 recipes 데이터가 merge되어 있으므로 steps, sauce가 포함되어 있을 겁니다.
-        final_list.append(recipe_dict)
-    
-    return {"recommended_recipes": final_list} """
-
-
-"""     @app.post("/recommend", response_model=List[RecipeRecommendation])
-def recommend(payload: RecommendRequest):
-    # 1. 기존 추천 로직 실행
-    recommendations = recommend_top_k(payload) 
-    
-    # 2. 상세 정보(조리법, 재료 리스트) 추가 로직
-    detailed_results = []
-    for rec in recommendations:
-        # recipes_serving(recipes)에서 해당 레시피의 상세 정보 가져오기
-        recipe_detail = recipes[recipes['recipe_id'] == rec.recipe_id].iloc[0]
-        recipe_detail = recipes[recipes["id"] == rec["recipe_id"]].iloc[0]
-
-        # 해당 레시피의 전체 재료 목록(recipe_items_df) 가져오기
-        items = recipe_items_df[recipe_items_df["recipe_id"] == rec["recipe_id"]].to_dict(orient="records")
-
-        # 기존 추천 정보에 상세 필드 추가
-        rec_dict = dict(rec)
-        rec_dict["steps"] = recipe_detail.get("steps", [])
-        rec_dict["sauce"] = recipe_detail.get("sauce", [])
-        rec_dict["items"] = items # 모달에서 재료 체크를 위해 필요
-        
-        detailed_results.append(rec_dict)
-        
-    return detailed_results """
+    """
+    AI 레시피 추천 엔드포인트
+    입력: inventory (ingredient_id 기반)
+    출력: AIRecipeRecommendation[] + 보유/미보유 재료 상세
+    """
+    return recommend_top_k(payload)
