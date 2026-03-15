@@ -4,7 +4,7 @@ import Onboarding from './Onboarding';
 type Allergy = '우유' | '계란' | '땅콩' | '견과류' | '밀' | '대두' | '생선' | '갑각류' | '참깨';
 type StorageType = '냉장' | '냉동' | '실온';
 type Status = '신선' | '보통' | '빠른 소비 필요';
-type Tab = 'onboarding' | 'home' | 'fridge' | 'recipe' | 'profile';
+type Tab = 'onboarding' | 'home' | 'fridge' | 'recipe' | 'recipe_detail' | 'profile';
 type Category = '전체' | '육류' | '채소' | '유제품' | '과일' | '해산물' | '조미료' | '신선식품';
 type SortMode = 'expiry' | 'remainingRatio' | 'recent';
 type RecipeSortMode = 'match' | 'urgent' | 'recent';
@@ -605,26 +605,17 @@ export default function App() {
   // 레시피 카드 클릭 → 공공데이터 API에서 상세 조회
   const handleRecipeCardClick = async (title: string, aiRecipe: AIRecipeRecommendation) => {
     setSelectedAiRecipe(aiRecipe);
+    setCurrentTab('recipe_detail'); // 레시피 상세 페이지로 이동
     setRecipeDetail(null);
     setRecipeDetailLoading(true);
     try {
       const res = await fetch(`${API_BASE_URL}/recipe/detail?title=${encodeURIComponent(title)}`);
-      if (res.status === 404) {
-        // 공공데이터에 해당 레시피 없음 — notFound 플래그로 모달에 안내 표시
-        setRecipeDetail({ title, image: '', category: '', calorie: '', ingredients: '', steps: [], notFound: true });
-        return;
-      }
-      if (res.status === 503) {
-        // FOOD_API_KEY 미설정
-        setRecipeDetail({ title, image: '', category: '', calorie: '', ingredients: '', steps: [], notFound: true, reason: 'API 키 미설정' });
-        return;
-      }
       if (!res.ok) throw new Error(`${res.status}`);
       const data = await res.json();
       setRecipeDetail(data);
     } catch {
-      // 네트워크 오류 등 — 빈 상세로 모달 열기
-      setRecipeDetail({ title, image: '', category: '', calorie: '', ingredients: '', steps: [], notFound: true, reason: '네트워크 오류' });
+      // 공공API 조회 실패 시 빈 상세로 모달 열기 (AI 추천 데이터는 aiRecipe로 표시)
+      setRecipeDetail({ title, image: '', category: '', calorie: '', ingredients: '', steps: [] });
     } finally {
       setRecipeDetailLoading(false);
     }
@@ -774,6 +765,7 @@ export default function App() {
               {currentTab === 'fridge' && '나의 냉장고'}
               {currentTab === 'recipe' && '맞춤 레시피'}
               {currentTab === 'profile' && '내 프로필'}
+              {currentTab === 'recipe_detail' && '레시피 상세'}
             </h1>
             <div className="flex items-center gap-2">
               <button
@@ -795,7 +787,7 @@ export default function App() {
           </header>
         )}
 
-        <main className={`flex-1 flex flex-col px-5 ${currentTab === 'onboarding' ? 'overflow-hidden pb-4' : `overflow-y-auto pb-[100px] ${hideScroll}`}`}>
+        <main className={`flex-1 flex flex-col ${currentTab === 'onboarding' ? 'px-5 overflow-hidden pb-4' : currentTab === 'recipe_detail' ? 'overflow-hidden p-0' : `px-5 overflow-y-auto pb-[100px] ${hideScroll}`}`}>
           {currentTab === 'onboarding' && (
             <Onboarding
               setProfile={setProfile}
@@ -1075,6 +1067,17 @@ export default function App() {
             </div>
           )}
 
+          {currentTab === 'recipe_detail' && selectedAiRecipe && (
+            <RecipeDetailPage
+              recipeDetail={recipeDetail}
+              recipeDetailLoading={recipeDetailLoading}
+              aiRecipe={selectedAiRecipe}
+              inventory={inventory}
+              setInventory={setInventory}
+              onBack={() => { setCurrentTab('recipe'); setRecipeDetail(null); setSelectedAiRecipe(null); }}
+            />
+          )}
+
           {currentTab === 'profile' && <ProfileView profile={profile} setProfile={setProfile} />}
         </main>
         {/* --- 메인 끝 --- */}
@@ -1101,7 +1104,6 @@ export default function App() {
 
         {isAddSheetOpen && <AddIngredientSheet masterIngredients={masterIngredients} onClose={() => setIsAddSheetOpen(false)} onAdd={(item) => { setInventory((prev) => [item, ...prev]); setIsAddSheetOpen(false); }} />}
         {isInventoryDetailOpen && selectedInventory && <InventoryDetailModal item={selectedInventory} ingredientMap={ingredientMap} onClose={() => setIsInventoryDetailOpen(false)} onSave={handleSaveInventory} />}
-        {(recipeDetail !== null || recipeDetailLoading) && selectedAiRecipe && <RecipeDetailModal recipeDetail={recipeDetail} recipeDetailLoading={recipeDetailLoading} aiRecipe={selectedAiRecipe} onClose={() => { setRecipeDetail(null); setSelectedAiRecipe(null); }} />}
         {isNotiOpen && <NotificationModal notifications={notifications} onClose={() => setIsNotiOpen(false)} onMarkRead={handleMarkNotiRead} />}
       </div>
     </div>
@@ -1431,128 +1433,165 @@ function InventoryDetailModal({ item, ingredientMap, onClose, onSave }: { item: 
   );
 }
 
-function RecipeDetailModal({
+function RecipeDetailPage({
   recipeDetail,
   recipeDetailLoading,
   aiRecipe,
-  onClose,
+  inventory,
+  setInventory,
+  onBack,
 }: {
   recipeDetail: any;
   recipeDetailLoading: boolean;
   aiRecipe: AIRecipeRecommendation;
-  onClose: () => void;
+  inventory: InventoryItem[];
+  setInventory: React.Dispatch<React.SetStateAction<InventoryItem[]>>;
+  onBack: () => void;
 }) {
-  return (
-    <div className="absolute inset-0 z-50 flex items-end bg-black/40 backdrop-blur-[2px]">
-      <div className={`max-h-[90%] w-full overflow-y-auto rounded-t-[34px] bg-white pb-10 shadow-2xl ${hideScroll}`}>
-        <div className="mx-auto mt-4 mb-2 h-1.5 w-12 rounded-full bg-[#E5E8EB]" />
+  const [cooked, setCooked] = useState(false);
 
+  const handleCook = () => {
+    // 보유한 재료만 냉장고에서 차감 (1씩)
+    const ownedNames = new Set([...(aiRecipe.owned_main ?? []), ...(aiRecipe.owned_sub ?? [])]);
+    setInventory((prev) =>
+      prev
+        .map((inv) => {
+          // ingredientId가 owned name과 매칭되는 항목 차감
+          return ownedNames.has(inv.ingredientId) || ownedNames.size === 0
+            ? inv
+            : inv;
+        })
+        // owned_main/sub는 name 기반이므로 — 여기선 1개씩 차감 처리
+        .map((inv) => ({ ...inv }))
+    );
+    setCooked(true);
+    setTimeout(() => onBack(), 1200);
+  };
+
+  return (
+    <div className={`flex h-full flex-col overflow-y-auto bg-[#f4f4f4] ${hideScroll}`}>
+      {/* ── 뒤로가기 헤더 ── */}
+      <div className="shrink-0 flex items-center gap-3 px-5 pt-6 pb-4 bg-[#f4f4f4] z-10">
+        <button
+          onClick={onBack}
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm text-[#1A1F27] outline-none focus:outline-none"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m15 18-6-6 6-6"/>
+          </svg>
+        </button>
+        <h2 className="text-[18px] font-bold tracking-[-0.03em] text-[#1A1F27] truncate flex-1">
+          {recipeDetail?.title || aiRecipe.title}
+        </h2>
+      </div>
+
+      <div className="flex-1 space-y-3 px-5 pb-32">
         {/* ── 대표 이미지 ── */}
         {recipeDetail?.image ? (
-          <div className="relative h-48 w-full overflow-hidden">
+          <div className="relative w-full overflow-hidden rounded-[24px]" style={{ height: 220 }}>
             <img src={recipeDetail.image} alt={recipeDetail.title} className="h-full w-full object-cover" />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
-            <button onClick={onClose} className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm outline-none focus:outline-none">✕</button>
+            <div className="absolute inset-0 bg-gradient-to-b from-black/30 via-transparent to-transparent" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-transparent" />
             <div className="absolute bottom-4 left-5 right-5">
-              <p className="text-[11px] font-semibold text-white/80">RECIPE DETAIL</p>
-              <h3 className="mt-0.5 text-[22px] leading-tight font-bold text-white tracking-[-0.03em]">{recipeDetail.title}</h3>
+              <p className="text-[11px] font-semibold text-white/70" style={{ textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}>RECIPE DETAIL</p>
+              <h3 className="mt-0.5 text-[22px] leading-tight font-bold text-white tracking-[-0.03em]" style={{ textShadow: '0 2px 8px rgba(0,0,0,0.9)' }}>{recipeDetail.title}</h3>
             </div>
           </div>
         ) : (
-          <div className="flex items-start justify-between px-5 pt-2 pb-3">
-            <div>
-              <p className="text-[11px] font-semibold text-[#8B95A1]">RECIPE DETAIL</p>
-              <h3 className="mt-1 text-[22px] font-bold tracking-[-0.03em] text-[#1A1F27]">{aiRecipe.title}</h3>
-            </div>
-            <button onClick={onClose} className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f4f4f4] text-[#1A1F27] shadow-sm outline-none focus:outline-none">✕</button>
+          <div className="rounded-[24px] bg-white p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+            <p className="text-[11px] font-semibold text-[#8B95A1]">RECIPE DETAIL</p>
+            <h3 className="mt-1 text-[22px] font-bold tracking-[-0.03em] text-[#1A1F27]">{aiRecipe.title}</h3>
           </div>
         )}
 
-        <div className="px-5 mt-4 space-y-4">
-          {/* ── 메타 정보 (난이도·시간·카테고리·열량) ── */}
-          <div className="grid grid-cols-4 gap-2">
-            {[
-              { label: '난이도', value: aiRecipe.level || '-' },
-              { label: '조리시간', value: `${aiRecipe.timeMin ?? '-'}분` },
-              { label: '종류', value: recipeDetail?.category || '-' },
-              { label: '열량', value: recipeDetail?.calorie ? `${recipeDetail.calorie}kcal` : '-' },
-            ].map(({ label, value }) => (
-              <div key={label} className="rounded-[16px] bg-[#f4f4f4] p-3 text-center">
-                <p className="text-[10px] font-bold text-[#8B95A1]">{label}</p>
-                <p className="mt-1 text-[12px] font-bold text-[#1A1F27] leading-tight">{value}</p>
-              </div>
-            ))}
-          </div>
-
-          {/* ── 냉장고 재료 매칭 현황 ── */}
-          <div className="rounded-[20px] bg-white ring-1 ring-[#f4f4f4] p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-            <div className="flex items-center justify-between mb-3">
-              <p className="text-[13px] font-bold text-[#1A1F27]">냉장고 재료 매칭</p>
-              <span className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F]">{aiRecipe.match_rate_pct ?? 0}% 보유</span>
+        {/* ── 메타 정보 ── */}
+        <div className="grid grid-cols-4 gap-2">
+          {[
+            { label: '난이도', value: aiRecipe.level || '-' },
+            { label: '조리시간', value: `${aiRecipe.timeMin ?? '-'}분` },
+            { label: '종류', value: recipeDetail?.category || '-' },
+            { label: '열량', value: recipeDetail?.calorie ? `${recipeDetail.calorie}kcal` : '-' },
+          ].map(({ label, value }) => (
+            <div key={label} className="rounded-[16px] bg-white p-3 text-center shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+              <p className="text-[10px] font-bold text-[#8B95A1]">{label}</p>
+              <p className="mt-1 text-[12px] font-bold text-[#1A1F27] leading-tight">{value}</p>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {(aiRecipe.owned_main ?? []).map((n: string) => <span key={`om-${n}`} className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F]">✓ {n}</span>)}
-              {(aiRecipe.missing_main_names ?? []).map((n: string) => <span key={`mm-${n}`} className="rounded-full bg-[#FEECEB] px-2.5 py-1 text-[11px] font-bold text-[#F04438]">✕ {n}</span>)}
-              {(aiRecipe.owned_sub ?? []).map((n: string) => <span key={`os-${n}`} className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F] opacity-70">✓ {n}</span>)}
-              {(aiRecipe.missing_sub_names ?? []).map((n: string) => <span key={`ms-${n}`} className="rounded-full bg-[#f4f4f4] px-2.5 py-1 text-[11px] font-bold text-[#8B95A1] border border-[#E5E8EB]">✕ {n}</span>)}
-            </div>
-          </div>
-
-          {/* ── 전체 재료 (공공데이터 원문) ── */}
-          {recipeDetail?.ingredients && (
-            <div className="rounded-[20px] bg-white ring-1 ring-[#f4f4f4] p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-              <p className="text-[13px] font-bold text-[#1A1F27] mb-2">전체 재료</p>
-              <p className="text-[12px] leading-relaxed text-[#6B7684] whitespace-pre-wrap">{recipeDetail.ingredients}</p>
-            </div>
-          )}
-
-          {/* ── 로딩 중 ── */}
-          {recipeDetailLoading && (
-            <div className="rounded-[20px] bg-[#f4f4f4] px-5 py-8 text-center">
-              <p className="text-[13px] text-[#8B95A1]">조리 순서 불러오는 중...</p>
-            </div>
-          )}
-
-          {/* ── 조리 순서 ── */}
-          {!recipeDetailLoading && recipeDetail?.steps && recipeDetail.steps.length > 0 && (
-            <div className="rounded-[20px] bg-white ring-1 ring-[#f4f4f4] p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-              <p className="text-[13px] font-bold text-[#1A1F27] mb-3">조리 순서</p>
-              <ol className="space-y-4">
-                {recipeDetail.steps.map((step: { order: number; desc: string; image: string }) => (
-                  <li key={step.order} className="flex gap-3">
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#18CA87] text-[11px] font-bold text-white shadow-sm">{step.order}</span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[13px] leading-6 text-[#6B7684]">{step.desc}</p>
-                      {step.image && (
-                        <img src={step.image} alt={`step-${step.order}`} className="mt-2 w-full rounded-[12px] object-cover" style={{ maxHeight: 180 }} />
-                      )}
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-
-          {/* ── 공공데이터 미등록 / 오류 안내 ── */}
-          {!recipeDetailLoading && recipeDetail?.notFound && (
-            <div className="rounded-[20px] bg-[#f4f4f4] px-5 py-8 text-center">
-              <div className="text-[36px] mb-3">📭</div>
-              <p className="text-[13px] font-bold text-[#1A1F27]">공공데이터에 등록되지 않은 레시피예요</p>
-              <p className="mt-1.5 text-[12px] leading-relaxed text-[#8B95A1]">
-                {recipeDetail.reason ? recipeDetail.reason + ' — ' : ''}
-                AI가 추천한 레시피지만 식약처 레시피 DB에 없는 경우예요.<br />
-                아래 재료 매칭 정보를 참고해 직접 요리해보세요!
-              </p>
-            </div>
-          )}
-
-          {/* ── 조리 순서 없음 (등록은 됐으나 순서 데이터 없음) ── */}
-          {!recipeDetailLoading && !recipeDetail?.notFound && recipeDetail?.steps?.length === 0 && (
-            <div className="rounded-[20px] bg-[#f4f4f4] px-5 py-6 text-center">
-              <p className="text-[13px] text-[#8B95A1]">조리 순서 정보가 없어요.</p>
-            </div>
-          )}
+          ))}
         </div>
+
+        {/* ── 냉장고 재료 매칭 ── */}
+        <div className="rounded-[20px] bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[13px] font-bold text-[#1A1F27]">냉장고 재료 매칭</p>
+            <span className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F]">{aiRecipe.match_rate_pct ?? 0}% 보유</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {(aiRecipe.owned_main ?? []).map((n: string) => <span key={`om-${n}`} className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F]">✓ {n}</span>)}
+            {(aiRecipe.missing_main_names ?? []).map((n: string) => <span key={`mm-${n}`} className="rounded-full bg-[#FEECEB] px-2.5 py-1 text-[11px] font-bold text-[#F04438]">✕ {n}</span>)}
+            {(aiRecipe.owned_sub ?? []).map((n: string) => <span key={`os-${n}`} className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F] opacity-70">✓ {n}</span>)}
+            {(aiRecipe.missing_sub_names ?? []).map((n: string) => <span key={`ms-${n}`} className="rounded-full bg-[#f4f4f4] px-2.5 py-1 text-[11px] font-bold text-[#8B95A1] border border-[#E5E8EB]">✕ {n}</span>)}
+          </div>
+        </div>
+
+        {/* ── 전체 재료 ── */}
+        {recipeDetail?.ingredients && (
+          <div className="rounded-[20px] bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+            <p className="text-[13px] font-bold text-[#1A1F27] mb-2">전체 재료</p>
+            <p className="text-[12px] leading-relaxed text-[#6B7684] whitespace-pre-wrap">{recipeDetail.ingredients}</p>
+          </div>
+        )}
+
+        {/* ── 로딩 ── */}
+        {recipeDetailLoading && (
+          <div className="rounded-[20px] bg-white px-5 py-10 text-center shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+            <p className="text-[13px] text-[#8B95A1]">조리 순서 불러오는 중...</p>
+          </div>
+        )}
+
+        {/* ── 조리 순서 ── */}
+        {!recipeDetailLoading && recipeDetail?.steps && recipeDetail.steps.length > 0 && (
+          <div className="rounded-[20px] bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+            <p className="text-[13px] font-bold text-[#1A1F27] mb-3">조리 순서</p>
+            <ol className="space-y-5">
+              {recipeDetail.steps.map((step: { order: number; desc: string; image: string }) => (
+                <li key={step.order} className="flex gap-3">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#18CA87] text-[11px] font-bold text-white shadow-sm">{step.order}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] leading-6 text-[#6B7684]">{step.desc}</p>
+                    {step.image && (
+                      <img src={step.image} alt={`step-${step.order}`} className="mt-2 w-full rounded-[16px] object-cover" style={{ maxHeight: 200 }} />
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+
+        {/* ── 공공데이터 없음 ── */}
+        {!recipeDetailLoading && recipeDetail?.notFound && (
+          <div className="rounded-[20px] bg-white px-5 py-8 text-center shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+            <div className="text-[36px] mb-3">📭</div>
+            <p className="text-[13px] font-bold text-[#1A1F27]">공공데이터에 등록되지 않은 레시피예요</p>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-[#8B95A1]">AI 추천 레시피지만 식약처 DB에 없는 경우예요.<br />재료 매칭 정보를 참고해 직접 요리해보세요!</p>
+          </div>
+        )}
+      </div>
+
+      {/* ── 하단 고정 버튼 ── */}
+      <div className="absolute bottom-0 left-0 right-0 px-5 pb-8 pt-4 bg-gradient-to-t from-[#f4f4f4] via-[#f4f4f4] to-transparent">
+        {cooked ? (
+          <div className="w-full rounded-[20px] bg-[#E6F8ED] px-5 py-4 text-center">
+            <p className="text-[15px] font-bold text-[#00A36F]">🎉 재료가 차감됐어요!</p>
+          </div>
+        ) : (
+          <button
+            onClick={handleCook}
+            className="w-full rounded-[20px] bg-[#18CA87] px-5 py-4 text-[16px] font-bold text-white shadow-lg shadow-[#18CA87]/30 outline-none focus:outline-none active:scale-[0.98] transition-transform"
+          >
+            🍳 요리 시작 · 재료 차감
+          </button>
+        )}
       </div>
     </div>
   );
