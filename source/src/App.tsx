@@ -223,7 +223,10 @@ const getIngredientEmoji = (category: string, name: string) => {
   if (name.includes('파스타')) return '🍝'; 
   if (name.includes('햄')) return '🍖'; 
   if (name.includes('소시지')) return '🍖'; 
-  if (name.includes('치즈')) return '🧀'; 
+  if (name.includes('치즈')) return '🧀';
+  if (name.includes('감자')) return '🥔';
+  if (name.includes('고구마')) return '🍠'; 
+
 
   return CATEGORY_EMOJI_MAP[category] || '🥦';
 };
