@@ -106,7 +106,7 @@ const getStatus = (expiryDate: string): Status => {
 function StepBar({ current, total }: { current: number; total: number }) {
   const labels = ['프로필 설정', '식재료 등록'];
   return (
-    <div className="px-1 pt-5 pb-4 shrink-0">
+    <div className="px-1 pt-3 pb-2 shrink-0">
       {/* 라벨 */}
       <div className="flex justify-between mb-2">
         {labels.map((label, i) => (
@@ -127,8 +127,6 @@ function StepBar({ current, total }: { current: number; total: number }) {
           />
         ))}
       </div>
-      {/* 스텝 카운터 */}
-      <p className="mt-2 text-right text-[10px] font-semibold text-[#8B95A1]">{current} / {total}</p>
     </div>
   );
 }
@@ -350,20 +348,19 @@ export default function Onboarding({ setProfile, setInventory, masterIngredients
       <StepBar current={2} total={2} />
 
       {/* 헤더 */}
-      <section className="rounded-[28px] bg-white p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] shrink-0">
-        <p className="text-[11px] font-semibold text-[#8B95A1]">STEP 2</p>
-        <h1 className="mt-1 text-[24px] leading-[1.2] font-bold tracking-[-0.04em] text-[#1A1F27]">냉장고에 있는<br />재료를 골라보세요</h1>
-        <p className="mt-1.5 text-[12px] text-[#8B95A1]">나중에 냉장고 탭에서 수정할 수 있어요.</p>
-      </section>
+      <div className="px-1 pb-2 shrink-0">
+        <h1 className="text-[22px] font-bold tracking-[-0.04em] text-[#1A1F27]">냉장고 재료를 골라보세요</h1>
+        <p className="mt-0.5 text-[11px] text-[#8B95A1]">나중에 냉장고 탭에서 수정할 수 있어요.</p>
+      </div>
 
       {/* 검색창 */}
-      <div className="mt-3 shrink-0">
+      <div className="mt-2 shrink-0">
         <div className="relative">
           <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[16px] pointer-events-none">🔍</span>
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="재료 직접 검색 (예: 된장, 김치...)"
+            placeholder="재료 직접 검색 (예: 감자, 토마토...)"
             className="w-full rounded-[20px] bg-white pl-10 pr-4 py-3.5 text-[14px] outline-none ring-1 ring-[#f4f4f4] shadow-[0_2px_10px_rgba(0,0,0,0.02)] placeholder:text-[#8B95A1]"
           />
           {searchQuery.length > 0 && (
@@ -383,8 +380,11 @@ export default function Onboarding({ setProfile, setInventory, masterIngredients
       {/* 재료 그리드 */}
       <div className="mt-3 flex-1 overflow-y-auto pb-2">
         {masterLoading && searchQuery.length === 0 && (
-          <div className="flex items-center justify-center py-10">
-            <span className="text-[13px] text-[#8B95A1]">재료 목록 불러오는 중...</span>
+          <div className="flex items-center gap-2 px-1 pb-2">
+            <div className="h-1.5 w-1.5 rounded-full bg-[#18CA87] animate-bounce" style={{animationDelay:'0ms'}} />
+            <div className="h-1.5 w-1.5 rounded-full bg-[#18CA87] animate-bounce" style={{animationDelay:'150ms'}} />
+            <div className="h-1.5 w-1.5 rounded-full bg-[#18CA87] animate-bounce" style={{animationDelay:'300ms'}} />
+            <span className="text-[11px] text-[#8B95A1]">서버에서 전체 재료 목록을 불러오는 중...</span>
           </div>
         )}
 

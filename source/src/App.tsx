@@ -496,6 +496,7 @@ export default function App() {
   // selectedRecipeId: 공공데이터 모달로 전환되어 미사용
   const [recipeDetail, setRecipeDetail] = useState<any>(null);
   const [recipeDetailLoading, setRecipeDetailLoading] = useState(false);
+  const recipeDetailCacheRef = useRef<Record<string, any>>({});  // 레시피 상세 캐시
   const [selectedAiRecipe, setSelectedAiRecipe] = useState<AIRecipeRecommendation | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -605,23 +606,33 @@ export default function App() {
   };
 
 
-  // 레시피 카드 클릭 → 상세 페이지로 이동
+  // 레시피 카드 클릭 → 상세 페이지로 이동 (캐시 적용)
   const handleRecipeCardClick = async (title: string, aiRecipe: AIRecipeRecommendation) => {
     setSelectedAiRecipe(aiRecipe);
+    setCurrentTab('recipe_detail');
+    // 캐시 히트: 즉시 표시
+    if (recipeDetailCacheRef.current[title]) {
+      setRecipeDetail(recipeDetailCacheRef.current[title]);
+      setRecipeDetailLoading(false);
+      return;
+    }
     setRecipeDetail(null);
     setRecipeDetailLoading(true);
-    setCurrentTab('recipe_detail');
     try {
       const res = await fetch(`${API_BASE_URL}/recipe/detail?title=${encodeURIComponent(title)}`);
       if (res.status === 404) {
-        setRecipeDetail({ title, image: '', category: '', calorie: '', ingredients: '', steps: [], notFound: true });
+        const fallback = { title, image: '', category: '', calorie: '', ingredients: '', steps: [], notFound: true };
+        recipeDetailCacheRef.current[title] = fallback;
+        setRecipeDetail(fallback);
         return;
       }
       if (!res.ok) throw new Error(`${res.status}`);
       const data = await res.json();
+      recipeDetailCacheRef.current[title] = data;  // 캐시 저장
       setRecipeDetail(data);
     } catch {
-      setRecipeDetail({ title, image: '', category: '', calorie: '', ingredients: '', steps: [], notFound: true });
+      // 네트워크 오류는 캐시에 저장 안 함 (다음에 재시도 가능)
+      setRecipeDetail({ title, image: '', category: '', calorie: '', ingredients: '', steps: [], notFound: true, networkError: true });
     } finally {
       setRecipeDetailLoading(false);
     }
@@ -686,7 +697,7 @@ export default function App() {
         allergies:            profile.allergies,
         preferred_moods:      [],
         inventory_confidence: 0.9,
-        top_k:                10,
+        top_k:                15,
         inventory:            inventoryPayload,
       }),
     });
@@ -734,7 +745,7 @@ export default function App() {
           day_of_week:             dayOfWeek,
           hour:                    now.getHours(),
           allergies:               profile.allergies,
-          top_k:                   20,
+          top_k:                   30,  // 한번에 더 많이 가져와 재호출 최소화
         }),
       });
       if (!response.ok) throw new Error(`추천 실패: ${response.status}`);
@@ -747,23 +758,29 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    if (currentTab === 'recipe' && recipeRecommendTab === 'ai') {
-      fetchAiRecommendations();
-    }
-  }, [currentTab, recipeRecommendTab, inventory, profile.householdSize, profile.allergies]);
+  // AI 추천: inventory 실제 변경 시만 호출
+  const inventoryHashRef = useRef('');
+  useEffect(() => {
+    if (currentTab !== 'recipe' || recipeRecommendTab !== 'ai') return;
+    const hash = inventory.map(i => `${i.ingredientId}:${i.quantity}:${i.expiryDate}`).sort().join('|') + `|${profile.householdSize}|${profile.allergies.join(',')}`;
+    if (hash === inventoryHashRef.current && aiRecommendations.length > 0) return;
+    inventoryHashRef.current = hash;
+    fetchAiRecommendations();
+  }, [currentTab, recipeRecommendTab, inventory, profile.householdSize, profile.allergies]);
 
-  // 선택 재료 변경 시 자동 추천 갱신
-  useEffect(() => {
-    if (currentTab === 'recipe' && recipeRecommendTab === 'selected') {
-      // 선택 재료 있으면 AND 조건, 없으면 냉장고 전체로 OR 조건
-      fetchSelectedRecommendations(priorityIngredientIds, priorityIngredientIds.length > 0 ? 'and' : 'or');
-    }
-  }, [currentTab, recipeRecommendTab, priorityIngredientIds, profile.householdSize, profile.allergies, inventory]);
+  // 선택 탭: 조건이 실제로 바뀔 때만 호출
+  const prevSelKeyRef = useRef('');
+  useEffect(() => {
+    if (currentTab !== 'recipe' || recipeRecommendTab !== 'selected') return;
+    const key = [...priorityIngredientIds].sort().join(',') + `|${profile.householdSize}|${profile.allergies.join(',')}|${inventory.map(i => i.ingredientId).sort().join(',')}`;
+    if (key === prevSelKeyRef.current && selectedRecommendations.length > 0) return;
+    prevSelKeyRef.current = key;
+    fetchSelectedRecommendations(priorityIngredientIds, priorityIngredientIds.length > 0 ? 'and' : 'or');
+  }, [currentTab, recipeRecommendTab, priorityIngredientIds, profile.householdSize, profile.allergies, inventory]);
 
   return (
     <div className={`flex min-h-screen items-center justify-center bg-[#f4f4f4] py-4 font-sans`}>
-      <div className="relative mx-auto flex h-[844px] w-full max-w-[390px] flex-col overflow-hidden rounded-[34px] bg-[#f4f4f4] shadow-2xl ring-1 ring-black/[0.04]">
+      <div className="relative mx-auto flex h-[780px] w-full max-w-[390px] flex-col overflow-hidden rounded-[34px] bg-[#f4f4f4] shadow-2xl ring-1 ring-black/[0.04]">
         {currentTab !== 'onboarding' && currentTab !== 'recipe_detail' && (
           <header className="bg-[#f4f4f4] px-5 pt-6 pb-4 shrink-0 z-10 flex items-center justify-between">
             <h1 className="text-[26px] font-bold tracking-[-0.05em] text-[#1A1F27]">
@@ -792,7 +809,7 @@ export default function App() {
           </header>
         )}
 
-        <main className={`flex-1 flex flex-col ${currentTab === 'onboarding' ? 'px-5 overflow-hidden pb-4' : currentTab === 'recipe_detail' ? 'overflow-hidden p-0' : `px-5 overflow-y-auto pb-[100px] ${hideScroll}`}`}>
+        <main className={`flex-1 flex flex-col ${currentTab === 'onboarding' ? 'px-5 overflow-hidden pb-4' : currentTab === 'recipe_detail' ? 'overflow-hidden p-0' : currentTab === 'home' ? 'px-5 pb-[80px]' : `px-5 overflow-y-auto pb-[100px] ${hideScroll}`}`}>
           {currentTab === 'onboarding' && (
             <Onboarding
               setProfile={setProfile}
@@ -802,74 +819,67 @@ export default function App() {
             />
           )}
 
-          {currentTab === 'home' && (
-            <div className="space-y-4 pt-1">
-              <section className="rounded-[32px] bg-[#18CA87] p-5 text-white shadow-[0_8px_30px_rgba(24,202,135,0.25)] flex flex-col gap-4">
-                <div className="px-1">
-                  <p className="text-[13px] font-medium text-white/90">오늘 구출해야 할 재료</p>
-                  <h2 className="mt-1 text-[24px] leading-[1.3] font-bold tracking-[-0.03em]">
-                    {profile.nickname}님의<br />냉장고 리포트
-                  </h2>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <DashboardMiniCard title="보관 재료 수" value={`${inventory.length}개`} icon={IconBasket} />
-                  <DashboardMiniCard title="마감 임박 재료 수" value={`${urgentItems.length}개`} icon={IconClock} />
-                  <DashboardMiniCard title="소진 우선 재료 수" value={`${lowRatioItems.length}개`} icon={IconFlame} />
-                  <DashboardMiniCard title="추천 레시피 수" value={`${safeRecipes.length}개`} icon={IconChefHat} />
-                </div>
-
-                <div className="rounded-[20px] bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-                  <div className="grid gap-3 text-[12px]">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-bold text-[#8B95A1] shrink-0">최근 추가 재료</span>
-                      <span className="text-right font-bold text-[#1A1F27] truncate">
-                        {recentItems.length > 0 ? recentItems.map((item) => ingredientMap[item.ingredientId].name).join(', ') : '없음'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-bold text-[#8B95A1] shrink-0">알레르기 제외 상태</span>
-                      <span className="text-right font-bold text-[#1A1F27] truncate">
-                        {profile.allergies.length > 0 ? `${profile.allergies.join(', ')} 제외` : '설정 없음'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section className="flex gap-3">
-                <button onClick={() => setCurrentTab('fridge')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-4 text-left shadow-[0_2px_10px_rgba(0,0,0,0.03)] ring-1 ring-black/[0.02]">
-                  <div>
-                    <p className="text-[14px] font-bold tracking-[-0.02em] text-[#1A1F27]">나의 냉장고</p>
-                    <p className="mt-0.5 text-[10px] leading-snug text-[#8B95A1]">재고 등록, 관리</p>
-                  </div>
-                  <div className="flex h-9 w-9 items-center justify-center rounded-[12px] bg-[#E6F8ED] text-[#18CA87]">
-                    <IconFridge className="w-5 h-5" />
-                  </div>
-                </button>
-
-                <button onClick={() => setCurrentTab('recipe')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-4 text-left shadow-[0_2px_10px_rgba(0,0,0,0.03)] ring-1 ring-black/[0.02]">
-                  <div>
-                    <p className="text-[14px] font-bold tracking-[-0.02em] text-[#1A1F27]">맞춤 레시피</p>
-                    <p className="mt-0.5 text-[10px] leading-snug text-[#8B95A1]">알레르기 필터</p>
-                  </div>
-                  <div className="flex h-9 w-9 items-center justify-center rounded-[12px] bg-[#FEECEB] text-[#F04438]">
-                    <IconRecipe className="w-5 h-5" />
-                  </div>
-                </button>
-              </section>
-
-              <section className="rounded-[20px] bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.03)] flex gap-3 items-start ring-1 ring-black/[0.02]">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#FFF9E6] text-[16px] leading-none">
-                  💡
-                </div>
-                <div>
-                  <h4 className="text-[12px] font-bold text-[#1A1F27]">{randomTip.ingredient} 보관 팁</h4>
-                  <p className="mt-1 text-[11px] leading-relaxed text-[#6B7684]">{randomTip.tip}</p>
-                </div>
-              </section>
-            </div>
-          )}
+          {currentTab === 'home' && (
+            <div className="flex flex-col gap-3 pt-1">
+              <section className="rounded-[28px] bg-[#18CA87] px-5 py-4 text-white shadow-[0_8px_24px_rgba(24,202,135,0.35)] flex flex-col gap-3">
+                <div>
+                  <p className="text-[11px] font-medium text-white/80">오늘 구출해야 할 재료</p>
+                  <h2 className="mt-0.5 text-[20px] font-bold tracking-[-0.03em]">
+                    {profile.nickname}님의 냉장고 리포트
+                  </h2>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <DashboardMiniCard title="보관 재료 수" value={`${inventory.length}개`} icon={IconBasket} />
+                  <DashboardMiniCard title="마감 임박 재료 수" value={`${urgentItems.length}개`} icon={IconClock} />
+                  <DashboardMiniCard title="소진 우선 재료 수" value={`${lowRatioItems.length}개`} icon={IconFlame} />
+                  <DashboardMiniCard title="추천 레시피 수" value={`${safeRecipes.length}개`} icon={IconChefHat} />
+                </div>
+                <div className="rounded-[16px] bg-white p-3">
+                  <div className="flex flex-col gap-2 text-[11px]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-[#8B95A1] shrink-0">최근 추가 재료</span>
+                      <span className="text-right font-bold text-[#1A1F27] truncate">
+                        {recentItems.length > 0 ? recentItems.map((item) => ingredientMap[item.ingredientId].name).join(', ') : '없음'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-[#8B95A1] shrink-0">알레르기 제외 상태</span>
+                      <span className="text-right font-bold text-[#1A1F27] truncate">
+                        {profile.allergies.length > 0 ? `${profile.allergies.join(', ')} 제외` : '설정 없음'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+              <section className="flex gap-2">
+                <button onClick={() => setCurrentTab('fridge')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-3 text-left shadow-[0_3px_14px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.03]">
+                  <div>
+                    <p className="text-[13px] font-bold tracking-[-0.02em] text-[#1A1F27]">나의 냉장고</p>
+                    <p className="mt-0.5 text-[10px] leading-snug text-[#8B95A1]">재고 등록, 관리</p>
+                  </div>
+                  <div className="flex h-9 w-9 items-center justify-center rounded-[12px] bg-[#E6F8ED] text-[#18CA87]">
+                    <IconFridge className="w-5 h-5" />
+                  </div>
+                </button>
+                <button onClick={() => setCurrentTab('recipe')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-3 text-left shadow-[0_3px_14px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.03]">
+                  <div>
+                    <p className="text-[13px] font-bold tracking-[-0.02em] text-[#1A1F27]">맞춤 레시피</p>
+                    <p className="mt-0.5 text-[10px] leading-snug text-[#8B95A1]">알레르기 필터</p>
+                  </div>
+                  <div className="flex h-9 w-9 items-center justify-center rounded-[12px] bg-[#FEECEB] text-[#F04438]">
+                    <IconRecipe className="w-5 h-5" />
+                  </div>
+                </button>
+              </section>
+              <section className="rounded-[20px] bg-white px-4 py-3 shadow-[0_3px_14px_rgba(0,0,0,0.08)] flex gap-3 items-start ring-1 ring-black/[0.03]">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#FFF9E6] text-[16px] leading-none">💡</div>
+                <div className="min-w-0">
+                  <p className="text-[12px] font-bold text-[#1A1F27]">{randomTip.ingredient} 보관 팁</p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-[#6B7684]">{randomTip.tip}</p>
+                </div>
+              </section>
+            </div>
+          )}
 
           {currentTab === 'fridge' && (
             <div className="flex flex-col flex-1 relative pt-1 gap-2">
@@ -1066,117 +1076,18 @@ export default function App() {
                   </>
                 ) : (
                   /* ── 재료 선택 추천 탭 ── */
-                  <>
-                    <div className="flex items-center justify-between px-1">
-                      <p className="text-[12px] text-[#6B7684]">
-                        {priorityIngredientIds.length === 0 ? '전체 재료 OR 조건으로 추천해요.' : `${priorityIngredientIds.length}개 선택 · AND 조건 추천`}
-                      </p>
-                      <button
-                        onClick={() => fetchSelectedRecommendations(priorityIngredientIds, priorityIngredientIds.length > 0 ? 'and' : 'or')}
-                        className="rounded-full bg-[#18CA87] px-3 py-1.5 text-[11px] font-bold text-white outline-none focus:outline-none shadow-sm shadow-[#18CA87]/20"
-                      >
-                        {selectedLoading ? '추천 중...' : '다시 추천'}
-                      </button>
-                    </div>
-
-                    {inventory.length === 0 ? (
-                      <div className="rounded-[24px] bg-white px-5 py-10 text-center shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-                        <div className="text-[40px] mb-3">🧊</div>
-                        <p className="text-[14px] font-bold text-[#1A1F27]">냉장고가 비어있어요</p>
-                        <p className="mt-1 text-[12px] text-[#8B95A1]">식재료를 먼저 등록하면 추천받을 수 있어요.</p>
-                        <button onClick={() => setCurrentTab('fridge')} className="mt-4 rounded-full bg-[#18CA87] px-6 py-3 text-[13px] font-bold text-white outline-none focus:outline-none">
-                          🥬 냉장고에 재료 등록하기
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="rounded-[24px] bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-                        <div className="flex items-center justify-between mb-3">
-                          <p className="text-[13px] font-bold text-[#1A1F27]">냉장고 재료 선택</p>
-                          {priorityIngredientIds.length > 0 && (
-                            <button
-                              onClick={() => { setPriorityIngredientIds([]); fetchSelectedRecommendations([], 'or'); }}
-                              className="text-[11px] font-semibold text-[#8B95A1] outline-none focus:outline-none"
-                            >
-                              전체 해제
-                            </button>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {inventory.map((item) => {
-                            const master = ingredientMap[item.ingredientId];
-                            const isSelected = priorityIngredientIds.includes(item.ingredientId);
-                            return (
-                              <button
-                                key={item.id}
-                                onClick={() => {
-                                  const next = isSelected
-                                    ? priorityIngredientIds.filter((id) => id !== item.ingredientId)
-                                    : [...priorityIngredientIds, item.ingredientId];
-                                  setPriorityIngredientIds(next);
-                                  fetchSelectedRecommendations(next, next.length > 0 ? 'and' : 'or');
-                                }}
-                                className={`flex items-center gap-1.5 rounded-full px-3 py-2 text-[12px] font-bold outline-none focus:outline-none transition-all active:scale-95 ${
-                                  isSelected ? 'bg-[#18CA87] text-white shadow-md shadow-[#18CA87]/20' : 'bg-[#f4f4f4] text-[#1A1F27]'
-                                }`}
-                              >
-                                <span className="text-[14px] leading-none">{master.emoji}</span>
-                                <span>{master.name}</span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {selectedError && (
-                      <div className="rounded-[20px] bg-white px-4 py-6 text-center text-[13px] text-[#F04438] shadow-[0_2px_10px_rgba(0,0,0,0.02)]">{selectedError}</div>
-                    )}
-
-                    {selectedLoading && (
-                      <div className="rounded-[20px] bg-white px-4 py-10 text-center shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-                        <p className="text-[13px] text-[#8B95A1]">레시피 찾는 중...</p>
-                      </div>
-                    )}
-
-                    {!selectedLoading && priorityIngredientIds.length > 0 && selectedRecommendations.length === 0 && !selectedError && (
-                      <div className="rounded-[20px] bg-white px-5 py-8 text-center shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-                        <div className="text-[40px] mb-3">🔍</div>
-                        <p className="text-[14px] font-bold text-[#1A1F27]">선택한 재료 조합의 레시피가 없어요</p>
-                        <p className="mt-1 text-[12px] text-[#8B95A1]">다른 재료를 선택하거나 재료를 줄여보세요.</p>
-                      </div>
-                    )}
-
-                    {!selectedLoading && selectedRecommendations.map((recipe) => (
-                      <button
-                        key={recipe.recipe_id}
-                        onClick={() => handleRecipeCardClick(recipe.title, recipe)}
-                        className="w-full overflow-hidden rounded-[24px] bg-white text-left outline-none focus:outline-none shadow-[0_2px_10px_rgba(0,0,0,0.02)] active:scale-[0.99] transition-transform"
-                      >
-                        <div className="bg-[#18CA87] px-5 py-5 text-white">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-bold">{recipe.mood || '선택 재료 추천'}</span>
-                            <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-[#1A1F27]">점수 {(recipe.pred_score * 100).toFixed(0)}</span>
-                          </div>
-                          <h3 className="mt-3.5 text-[20px] font-bold tracking-[-0.03em]">{recipe.title}</h3>
-                          <div className="mt-2.5 flex gap-2">
-                            <span className="rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-bold">{recipe.level || '-'}</span>
-                            <span className="rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-bold">⏱ {recipe.timeMin ?? '-'}분</span>
-                          </div>
-                        </div>
-                        <div className="p-4">
-                          <div className="rounded-[16px] bg-[#f4f4f4] p-3">
-                            <p className="text-[11px] font-bold text-[#1A1F27] mb-2">필요한 재료 <span className="ml-1 font-normal text-[#8B95A1]">{recipe.match_rate_pct ?? 0}% 보유</span></p>
-                            <div className="flex flex-wrap gap-1.5">
-                              {(recipe.owned_main ?? []).map((n: string) => <span key={`om-${n}`} className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F]">✓ {n}</span>)}
-                              {(recipe.missing_main_names ?? []).map((n: string) => <span key={`mm-${n}`} className="rounded-full bg-[#FEECEB] px-2.5 py-1 text-[11px] font-bold text-[#F04438]">✕ {n}</span>)}
-                              {(recipe.owned_sub ?? []).map((n: string) => <span key={`os-${n}`} className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F] opacity-70">✓ {n}</span>)}
-                              {(recipe.missing_sub_names ?? []).map((n: string) => <span key={`ms-${n}`} className="rounded-full bg-[#f4f4f4] px-2.5 py-1 text-[11px] font-bold text-[#8B95A1] border border-[#E5E8EB]">✕ {n}</span>)}
-                            </div>
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                  </>
+                  <SelectedRecipeTab
+                    inventory={inventory}
+                    ingredientMap={ingredientMap}
+                    priorityIngredientIds={priorityIngredientIds}
+                    setPriorityIngredientIds={setPriorityIngredientIds}
+                    selectedRecommendations={selectedRecommendations}
+                    selectedLoading={selectedLoading}
+                    selectedError={selectedError}
+                    fetchSelectedRecommendations={fetchSelectedRecommendations}
+                    onRecipeClick={handleRecipeCardClick}
+                    onGoFridge={() => setCurrentTab('fridge')}
+                  />
                 )}
               </section>
             </div>
@@ -1228,14 +1139,14 @@ export default function App() {
 
 function DashboardMiniCard({ title, value, icon: Icon }: { title: string; value: string; icon: React.ElementType }) {
   return (
-    <div className="rounded-[20px] bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)] flex flex-col gap-3">
+    <div className="rounded-[20px] bg-white p-3.5 shadow-[0_2px_12px_rgba(0,0,0,0.07)] flex flex-col gap-2.5">
       <div className="flex items-start justify-between">
         <p className="text-[12px] font-bold text-[#8B95A1] leading-snug break-keep pr-1">{title}</p>
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#E6F8ED] text-[#18CA87]">
           <Icon className="w-4 h-4" />
         </div>
       </div>
-      <p className="text-[20px] font-bold tracking-[-0.03em] text-[#1A1F27]">{value}</p>
+      <p className="text-[18px] font-bold tracking-[-0.03em] text-[#1A1F27]">{value}</p>
     </div>
   );
 }
@@ -1566,19 +1477,22 @@ function RecipeDetailPage({
   ingredientMap: Record<string, any>;
   onBack: () => void;
 }) {
-  const [cooked, setCooked] = useState(false);
+  const [showCookPopup, setShowCookPopup] = useState(false);
+  const [cookRating, setCookRating] = useState(0);
+  const [cookedIngredients, setCookedIngredients] = useState<{name: string; qty: number; emoji: string}[]>([]);
 
   // 보유 재료 이름 목록
   const ownedNames = new Set([...(aiRecipe.owned_main ?? []), ...(aiRecipe.owned_sub ?? [])]);
 
   const handleCook = () => {
+    const deducted: {name: string; qty: number; emoji: string}[] = [];
     if (ownedNames.size > 0) {
       setInventory((prev) => {
         const next = prev.map((inv) => {
-          // ingredientId로 ingredientMap에서 이름 조회 후 ownedNames와 매칭
           const master = ingredientMap[inv.ingredientId];
           const name = master?.name ?? '';
           if (name && ownedNames.has(name)) {
+            deducted.push({ name, qty: 1, emoji: master?.emoji ?? '🥘' });
             return { ...inv, quantity: Math.max(0, inv.quantity - 1) };
           }
           return inv;
@@ -1586,8 +1500,13 @@ function RecipeDetailPage({
         return next.filter((inv) => inv.quantity > 0);
       });
     }
-    setCooked(true);
-    setTimeout(() => onBack(), 1500);
+    setCookedIngredients(deducted);
+    setShowCookPopup(true);
+  };
+
+  const handlePopupClose = () => {
+    setShowCookPopup(false);
+    onBack();
   };
 
   return (
@@ -1700,22 +1619,75 @@ function RecipeDetailPage({
           )}
         </div>
 
-        {/* ── 플로팅 버튼 — 스크롤 영역 맨 아래 고정 ── */}
+        {/* ── 플로팅 버튼 ── */}
         <div className="sticky bottom-0 px-5 pb-8 pt-4 bg-gradient-to-t from-[#f4f4f4] via-[#f4f4f4] to-transparent">
-          {cooked ? (
-            <div className="w-full rounded-[20px] bg-[#E6F8ED] px-5 py-4 text-center">
-              <p className="text-[15px] font-bold text-[#00A36F]">🎉 재료가 차감됐어요! 맛있게 드세요.</p>
-            </div>
-          ) : (
-            <button
-              onClick={handleCook}
-              className="w-full rounded-[20px] bg-[#18CA87] px-5 py-4 text-[16px] font-bold text-white shadow-[0_4px_14px_rgba(0,0,0,0.12)] outline-none focus:outline-none active:scale-[0.98] transition-transform"
-            >
-              🍳 요리 완료 · 재료 차감
-            </button>
-          )}
+          <button
+            onClick={handleCook}
+            className="w-full rounded-[20px] bg-[#18CA87] px-5 py-4 text-[16px] font-bold text-white shadow-[0_4px_14px_rgba(0,0,0,0.12)] outline-none focus:outline-none active:scale-[0.98] transition-transform"
+          >
+            🍳 요리 완료 · 재료 차감
+          </button>
         </div>
       </div>
+
+      {/* ── 요리 완료 팝업 ── */}
+      {showCookPopup && (
+        <div className="absolute inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-[2px]">
+          <div className="w-full rounded-t-[34px] bg-white px-6 pb-10 pt-6 shadow-2xl">
+            <div className="mx-auto mb-5 h-1.5 w-12 rounded-full bg-[#E5E8EB]" />
+            <div className="text-center mb-5">
+              <div className="text-[48px] mb-2">🎉</div>
+              <h3 className="text-[20px] font-bold tracking-[-0.03em] text-[#1A1F27]">요리 완료!</h3>
+              <p className="mt-1 text-[13px] text-[#6B7684]">냉장고 재료를 맛있게 사용했어요</p>
+            </div>
+            {cookedIngredients.length > 0 ? (
+              <div className="rounded-[20px] bg-[#f4f4f4] p-4 mb-5 space-y-2.5">
+                {cookedIngredients.map((ing, i) => (
+                  <div key={i} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[22px]">{ing.emoji}</span>
+                      <span className="text-[14px] font-bold text-[#1A1F27]">{ing.name}</span>
+                    </div>
+                    <span className="rounded-full bg-[#E6F8ED] px-3 py-1 text-[12px] font-bold text-[#00A36F]">
+                      {ing.qty}개 구출 성공! 🌿
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-[20px] bg-[#f4f4f4] p-4 mb-5 text-center">
+                <p className="text-[13px] text-[#8B95A1]">차감할 냉장고 재료가 없었어요</p>
+              </div>
+            )}
+            <div className="text-center mb-6">
+              <p className="text-[13px] font-bold text-[#1A1F27] mb-3">이 레시피는 어땠나요?</p>
+              <div className="flex justify-center gap-2">
+                {[1,2,3,4,5].map((star) => (
+                  <button
+                    key={star}
+                    onClick={() => setCookRating(star)}
+                    className="text-[36px] outline-none focus:outline-none transition-transform active:scale-90"
+                    style={{ filter: star <= cookRating ? 'none' : 'grayscale(1) opacity(0.35)' }}
+                  >
+                    ⭐
+                  </button>
+                ))}
+              </div>
+              {cookRating > 0 && (
+                <p className="mt-2 text-[12px] font-semibold text-[#18CA87]">
+                  {cookRating === 5 ? '최고예요! 👏' : cookRating >= 4 ? '맛있었어요 😊' : cookRating >= 3 ? '괜찮았어요 🙂' : '아쉬웠어요 😅'}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={handlePopupClose}
+              className="w-full rounded-[20px] bg-[#18CA87] px-5 py-4 text-[16px] font-bold text-white shadow-[0_4px_14px_rgba(0,0,0,0.12)] outline-none focus:outline-none active:scale-[0.98] transition-transform"
+            >
+              냉장고로 돌아가기
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1756,6 +1728,221 @@ function NotificationModal({ notifications, onClose, onMarkRead }: { notificatio
       </div>
     </div>
   );
+}
+
+// ── 선택 재료 추천 탭 컴포넌트
+// - 전체 칩 (OR) / 개별 칩 다중선택 (AND)
+// - 무한 스크롤 (4개씩)
+// - 이미지 카드 UI
+const SELECTED_PAGE_SIZE = 4;
+
+function SelectedRecipeTab({
+  inventory, ingredientMap, priorityIngredientIds, setPriorityIngredientIds,
+  selectedRecommendations, selectedLoading, selectedError,
+  fetchSelectedRecommendations, onRecipeClick, onGoFridge,
+}: {
+  inventory: InventoryItem[];
+  ingredientMap: Record<string, any>;
+  priorityIngredientIds: string[];
+  setPriorityIngredientIds: React.Dispatch<React.SetStateAction<string[]>>;
+  selectedRecommendations: AIRecipeRecommendation[];
+  selectedLoading: boolean;
+  selectedError: string;
+  fetchSelectedRecommendations: (ids: string[], mode: 'or' | 'and') => void;
+  onRecipeClick: (title: string, recipe: AIRecipeRecommendation) => void;
+  onGoFridge: () => void;
+}) {
+  const [visibleCount, setVisibleCount] = React.useState(SELECTED_PAGE_SIZE);
+  const loaderRef = React.useRef<HTMLDivElement>(null);
+  const isAllSelected = priorityIngredientIds.length === 0;
+
+  // 선택 조건 변경 시 페이지 초기화
+  React.useEffect(() => { setVisibleCount(SELECTED_PAGE_SIZE); }, [selectedRecommendations]);
+
+  // 무한 스크롤 IntersectionObserver
+  React.useEffect(() => {
+    const el = loaderRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && visibleCount < selectedRecommendations.length) {
+          setVisibleCount((prev) => Math.min(prev + SELECTED_PAGE_SIZE, selectedRecommendations.length));
+        }
+      },
+      { threshold: 0.1 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [visibleCount, selectedRecommendations.length]);
+
+  const handleChipClick = (ingredientId: string) => {
+    const next = priorityIngredientIds.includes(ingredientId)
+      ? priorityIngredientIds.filter((id) => id !== ingredientId)
+      : [...priorityIngredientIds, ingredientId];
+    setPriorityIngredientIds(next);
+    fetchSelectedRecommendations(next, next.length > 0 ? 'and' : 'or');
+  };
+
+  const handleAllClick = () => {
+    setPriorityIngredientIds([]);
+    fetchSelectedRecommendations([], 'or');
+  };
+
+  const visibleRecipes = selectedRecommendations.slice(0, visibleCount);
+
+  return (
+    <>
+      {/* 안내 + 다시 추천 */}
+      <div className="flex items-center justify-between px-1">
+        <p className="text-[12px] text-[#6B7684]">
+          {isAllSelected ? '전체 재료 OR 조건으로 추천해요.' : `${priorityIngredientIds.length}개 선택 · AND 조건 추천`}
+        </p>
+        <button
+          onClick={() => fetchSelectedRecommendations(priorityIngredientIds, isAllSelected ? 'or' : 'and')}
+          className="rounded-full bg-[#18CA87] px-3 py-1.5 text-[11px] font-bold text-white outline-none focus:outline-none shadow-sm shadow-[#18CA87]/20"
+        >
+          {selectedLoading ? '추천 중...' : '다시 추천'}
+        </button>
+      </div>
+
+      {/* 재료 칩 선택 */}
+      {inventory.length === 0 ? (
+        <div className="rounded-[24px] bg-white px-5 py-10 text-center shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+          <div className="text-[40px] mb-3">🧊</div>
+          <p className="text-[14px] font-bold text-[#1A1F27]">냉장고가 비어있어요</p>
+          <p className="mt-1 text-[12px] text-[#8B95A1]">식재료를 먼저 등록하면 추천받을 수 있어요.</p>
+          <button onClick={onGoFridge} className="mt-4 rounded-full bg-[#18CA87] px-6 py-3 text-[13px] font-bold text-white outline-none focus:outline-none">
+            🥬 냉장고에 재료 등록하기
+          </button>
+        </div>
+      ) : (
+        <div className="rounded-[24px] bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[13px] font-bold text-[#1A1F27]">냉장고 재료 선택</p>
+            {!isAllSelected && (
+              <button onClick={handleAllClick} className="text-[11px] font-semibold text-[#8B95A1] outline-none focus:outline-none">
+                전체 해제
+              </button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {/* 전체 칩 (OR 조건) */}
+            <button
+              onClick={handleAllClick}
+              className={`flex items-center gap-1 rounded-full px-3 py-2 text-[12px] font-bold outline-none focus:outline-none transition-all active:scale-95 ${
+                isAllSelected ? 'bg-[#18CA87] text-white shadow-md shadow-[#18CA87]/20' : 'bg-[#f4f4f4] text-[#6B7684]'
+              }`}
+            >
+              전체
+            </button>
+            {/* 개별 재료 칩 (AND 조건) */}
+            {inventory.map((item) => {
+              const master = ingredientMap[item.ingredientId];
+              const isSelected = priorityIngredientIds.includes(item.ingredientId);
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => handleChipClick(item.ingredientId)}
+                  className={`flex items-center gap-1.5 rounded-full px-3 py-2 text-[12px] font-bold outline-none focus:outline-none transition-all active:scale-95 ${
+                    isSelected ? 'bg-[#18CA87] text-white shadow-md shadow-[#18CA87]/20' : 'bg-[#f4f4f4] text-[#1A1F27]'
+                  }`}
+                >
+                  <span className="text-[14px] leading-none">{master.emoji}</span>
+                  <span>{master.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* 에러 */}
+      {selectedError && (
+        <div className="rounded-[20px] bg-white px-4 py-6 text-center text-[13px] text-[#F04438] shadow-[0_2px_10px_rgba(0,0,0,0.02)]">{selectedError}</div>
+      )}
+
+      {/* 로딩 스켈레톤 */}
+      {selectedLoading && (
+        <div className="space-y-3">
+          {[1,2,3,4].map((i) => (
+            <div key={i} className="overflow-hidden rounded-[24px] bg-white shadow-[0_2px_10px_rgba(0,0,0,0.02)] animate-pulse">
+              <div className="h-[140px] bg-[#f4f4f4]" />
+              <div className="p-4 space-y-2">
+                <div className="h-4 w-2/3 rounded-full bg-[#f4f4f4]" />
+                <div className="h-3 w-1/2 rounded-full bg-[#f4f4f4]" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 결과 없음 */}
+      {!selectedLoading && !isAllSelected && selectedRecommendations.length === 0 && !selectedError && (
+        <div className="rounded-[20px] bg-white px-5 py-8 text-center shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+          <div className="text-[40px] mb-3">🔍</div>
+          <p className="text-[14px] font-bold text-[#1A1F27]">선택한 재료 조합의 레시피가 없어요</p>
+          <p className="mt-1 text-[12px] text-[#8B95A1]">다른 재료를 선택하거나 재료를 줄여보세요.</p>
+        </div>
+      )}
+
+      {/* 이미지 카드 리스트 */}
+      {!selectedLoading && visibleRecipes.map((recipe) => (
+        <button
+          key={recipe.recipe_id}
+          onClick={() => onRecipeClick(recipe.title, recipe)}
+          className="w-full overflow-hidden rounded-[24px] bg-white text-left outline-none focus:outline-none shadow-[0_2px_10px_rgba(0,0,0,0.02)] active:scale-[0.99] transition-transform"
+        >
+          {/* 이미지 or 초록 헤더 */}
+          {(recipe as any).image ? (
+            <div className="relative h-[140px] w-full overflow-hidden">
+              <img src={(recipe as any).image} alt={recipe.title} className="h-full w-full object-cover" />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+              <div className="absolute bottom-0 left-0 right-0 px-4 pb-3">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="rounded-full bg-white/25 px-2 py-0.5 text-[10px] font-bold text-white">{recipe.mood || '추천'}</span>
+                  <span className="rounded-full bg-white/25 px-2 py-0.5 text-[10px] font-bold text-white">{recipe.level || '-'}</span>
+                  <span className="rounded-full bg-white/25 px-2 py-0.5 text-[10px] font-bold text-white">⏱ {recipe.timeMin ?? '-'}분</span>
+                </div>
+                <h3 className="text-[17px] font-bold text-white tracking-[-0.03em] leading-tight" style={{ textShadow: '0 1px 4px rgba(0,0,0,0.7)' }}>{recipe.title}</h3>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-[#18CA87] px-4 py-4 text-white">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-bold">{recipe.mood || '추천'}</span>
+                <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-bold">{recipe.level || '-'}</span>
+                <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-bold">⏱ {recipe.timeMin ?? '-'}분</span>
+              </div>
+              <h3 className="text-[18px] font-bold tracking-[-0.03em]">{recipe.title}</h3>
+            </div>
+          )}
+          {/* 재료 매칭 */}
+          <div className="px-4 py-3">
+            <p className="text-[11px] font-bold text-[#1A1F27] mb-2">
+              필요한 재료 <span className="ml-1 font-normal text-[#8B95A1]">{recipe.match_rate_pct ?? 0}% 보유</span>
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {(recipe.owned_main ?? []).map((n: string) => <span key={`om-${n}`} className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F]">✓ {n}</span>)}
+              {(recipe.missing_main_names ?? []).map((n: string) => <span key={`mm-${n}`} className="rounded-full bg-[#FEECEB] px-2.5 py-1 text-[11px] font-bold text-[#F04438]">✕ {n}</span>)}
+              {(recipe.owned_sub ?? []).slice(0, 2).map((n: string) => <span key={`os-${n}`} className="rounded-full bg-[#E6F8ED] px-2.5 py-1 text-[11px] font-bold text-[#00A36F] opacity-70">✓ {n}</span>)}
+            </div>
+          </div>
+        </button>
+      ))}
+
+      {/* 무한 스크롤 감지 영역 */}
+      {!selectedLoading && visibleCount < selectedRecommendations.length && (
+        <div ref={loaderRef} className="py-4 text-center">
+          <p className="text-[12px] text-[#8B95A1]">스크롤하면 더 불러와요 ({visibleCount}/{selectedRecommendations.length})</p>
+        </div>
+      )}
+
+      {/* 모두 표시됨 */}
+      {!selectedLoading && selectedRecommendations.length > 0 && visibleCount >= selectedRecommendations.length && (
+        <p className="text-center text-[11px] text-[#C5CACC] py-2">전체 {selectedRecommendations.length}개 레시피</p>
+      )}
+    </>
+  );
 }
 
 function NavItem({ icon: Icon, label, active, onClick }: { icon: React.ElementType; label: string; active: boolean; onClick: () => void }) {
