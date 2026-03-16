@@ -58,12 +58,15 @@ ing_id_by_name = {row["name"]: row["id"] for _, row in ingredient_master.iterrow
 print(f"✅ 로드 완료: 레시피 {len(recipes)}건 / 식재료 마스터 {len(ingredient_master)}건")
 
 # ── 피처 컬럼 정의 (학습 시와 동일한 순서 유지 필수) ────────
+# 모델(pkl)이 학습된 피처 순서 — 반드시 학습 시와 동일하게 유지
 FEATURE_COLS = [
     "missing_main", "missing_sub", "match_rate", "has_all_main",
     "ingredient_waste_score",
     "avg_urgency", "absolute_volume", "urgency_x_volume", "owned_qty_score",
+    "has_qty_info",          # 수량 정보 존재 여부 (1/0)
     "time_min", "difficulty_num",
-    "hour_score", "weekend_score", "weekday_dinner_score", "late_night_score",
+    "time_context_score",    # 시간대 점수 (hour_score 대체)
+    "weekend_score", "weekday_dinner_score", "late_night_score",
 ]
 
 # ── CONDIMENT_KEYWORDS (조미료 제외용) ──────────────────────
@@ -321,9 +324,10 @@ def extract_features(recipe_row: dict, fridge_map: dict, hour: int, day_of_week:
         "absolute_volume":        round(absolute_volume_score, 4),
         "urgency_x_volume":       round(urgency_x_volume, 4),
         "owned_qty_score":        round(owned_qty_score, 4),
+        "has_qty_info":           1 if qty_scores else 0,   # 수량 정보 존재 여부
         "time_min":               float(recipe_row.get("timeMin", 30)),
         "difficulty_num":         float(recipe_row.get("difficulty_num", 2.0)),
-        "hour_score":             hour_score,
+        "time_context_score":     hour_score,   # hour_score를 time_context_score로 매핑
         "weekend_score":          weekend_score,
         "weekday_dinner_score":   weekday_dinner_score,
         "late_night_score":       late_night_score,
