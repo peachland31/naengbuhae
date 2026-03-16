@@ -91,29 +91,60 @@ _recipe_detail_cache: dict = {}
 
 
 # ── 재료명 유효성 필터 ──────────────────────────────────────
-# recipes_df.pkl 파싱 오류로 인해 섞여 들어온 섹션 라벨 제거
-# 모델 재학습 없이 응답 시점에 필터링
-_INVALID_INGREDIENT_PATTERNS = re.compile(
-    r'^(주재료|부재료|양념|양념장|소스|드레싱|토핑|장식|재료|기타|다진|볶은|'
-    r'삶은|구운|찐|데친|무친|절인|말린|건|생|냉동|냉장|유기농|국내산|수입산|'
-    r'적당량|약간|조금|少量|少々|다진것|다진 것|손질한|손질).*$'
+# 전략: 라벨 패턴이 아닌 두 가지 규칙으로 필터
+#   1. 완전일치 블랙리스트 (섹션 라벨 단어 자체)
+#   2. 접두어 블랙리스트 (섹션 라벨로 시작하는 경우)
+#   3. 조미료 키워드 (main_names에서 조미료 제거)
+
+_INVALID_EXACT = {
+    "주재료", "부재료", "재료", "양념", "양념장", "소스", "드레싱",
+    "토핑", "장식", "기타", "다진", "볶은", "삶은", "구운", "찐",
+    "데친", "무친", "절인", "말린", "건", "생", "냉동", "냉장",
+    "유기농", "국내산", "수입산", "적당량", "약간", "조금", "손질",
+    "손질한", "다진것", "혼합", "기본", "선택",
+}
+
+_INVALID_PREFIXES = (
+    "주재료", "부재료", "양념", "소스", "장식", "토핑", "드레싱",
+    "다진 ", "볶은 ", "삶은 ", "구운 ", "찐 ", "저염",
 )
-_MIN_LEN = 2   # 1글자 토큰 제거
-_MAX_LEN = 15  # 너무 긴 문자열 제거 (문장 수준)
+
+# main_ingredients에서 제거할 조미료류
+_CONDIMENT_NAMES = {
+    "소금", "후추", "설탕", "간장", "식초", "된장", "고추장", "쌈장",
+    "맛술", "미림", "올리고당", "물엿", "마늘가루", "양파가루", "고춧가루",
+    "참기름", "들기름", "올리브오일", "식용유", "버터", "케첩", "마요네즈",
+    "머스타드", "굴소스", "피시소스", "다시다", "카레가루", "전분", "밀가루",
+    "저염소금", "천일염", "꽃소금", "맛소금", "저염간장", "국간장", "진간장",
+    "통깨", "깨소금", "참깨", "후춧가루", "녹말가루", "청주", "물",
+}
+
+_MIN_LEN = 2
+_MAX_LEN = 15
 
 def is_valid_ingredient(name: str) -> bool:
-    """재료명으로 유효한지 검사"""
     if not name or not isinstance(name, str):
         return False
     name = name.strip()
     if len(name) < _MIN_LEN or len(name) > _MAX_LEN:
         return False
-    if _INVALID_INGREDIENT_PATTERNS.match(name):
-        return False
-    # 숫자만 있거나 숫자로 시작하는 토큰 제거 (예: "1개", "300g")
     if re.match(r"^[0-9]", name):
         return False
+    if name in _INVALID_EXACT:
+        return False
+    for prefix in _INVALID_PREFIXES:
+        if name.startswith(prefix):
+            return False
     return True
+
+def is_valid_main_ingredient(name: str) -> bool:
+    """main_ingredients용 - 조미료/섹션라벨 모두 제거"""
+    if not is_valid_ingredient(name):
+        return False
+    if name in _CONDIMENT_NAMES:
+        return False
+    return True
+
 
 
 # ── Pydantic 스키마 ──────────────────────────────────────────
@@ -353,7 +384,7 @@ def recommend_top_k(payload: RecommendRequest) -> list:
 
         # 보유/미보유 재료 분리
         req_names  = [n for n in (recipe["required_ingredients"] or []) if is_valid_ingredient(n)]
-        main_names = [n for n in (recipe["main_ingredients"] or [])    if is_valid_ingredient(n)]
+        main_names = [n for n in (recipe["main_ingredients"] or [])    if is_valid_main_ingredient(n)]
         sub_names  = [n for n in req_names if n not in set(main_names)]
 
         owned_main    = [n for n in main_names if n in fridge_map]
@@ -508,7 +539,7 @@ def recommend_selected(payload: SelectedRecommendRequest):
     results = []
     for _, row in top_df.iterrows():
         req_names  = [n for n in (row["required_ingredients"] or []) if is_valid_ingredient(n)]
-        main_names = [n for n in (row["main_ingredients"] or [])     if is_valid_ingredient(n)]
+        main_names = [n for n in (row["main_ingredients"] or [])     if is_valid_main_ingredient(n)]
         sub_names  = [n for n in req_names if n not in set(main_names)]
 
         # 선택 재료 기준으로 보유/미보유 구분

@@ -263,31 +263,31 @@ export default function Onboarding({ setProfile, setInventory, masterIngredients
   // -------------------------
   if (step === 'profile') {
     return (
-      <div className={`flex h-full flex-col overflow-y-auto ${hideScroll}`}>
+      <div className="flex h-full flex-col">
         <StepBar current={1} total={2} />
 
-        <div className="flex-1 space-y-3 pb-2">
-          <section className="rounded-[28px] bg-white p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+        <div className="flex-1 space-y-2 overflow-y-auto pb-1">
+          <div className="px-1 pt-1">
             <p className="text-[11px] font-semibold text-[#8B95A1]">WELCOME</p>
-            <h1 className="mt-1 text-[28px] leading-[1.1] font-bold tracking-[-0.04em] text-[#1A1F27]">나에게 맞는<br />냉장고를 시작해요</h1>
-          </section>
+            <h1 className="mt-1 text-[26px] leading-[1.1] font-bold tracking-[-0.04em] text-[#1A1F27]">나에게 맞는<br />냉장고를 시작해요</h1>
+          </div>
 
-          <section className="rounded-[28px] bg-white p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+          <section className="rounded-[28px] bg-white px-5 py-3 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
             <div>
               <p className="text-[13px] font-bold text-[#1A1F27]">프로필 이미지</p>
               <p className="mt-0.5 text-[11px] text-[#8B95A1]">슬라이드로 넘겨 선택할 수 있어요.</p>
             </div>
-            <div className="mt-3 flex items-center gap-3 rounded-[20px] bg-[#f4f4f4] px-4 py-4">
+            <div className="mt-2 flex items-center gap-3 rounded-[20px] bg-[#f4f4f4] px-4 py-3">
               <button onClick={() => setLocalProfile((prev) => ({ ...prev, avatar: getNextAvatar(prev.avatar.id, 'prev') }))} className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-[16px] text-[#1A1F27] outline-none focus:outline-none shadow-sm">‹</button>
               <div className="flex flex-1 flex-col items-center justify-center py-2">
-                <div className="text-[54px] leading-none">{localProfile.avatar.emoji}</div>
-                <p className="mt-3 text-[13px] font-bold text-[#6B7684]">{localProfile.avatar.label}</p>
+                <div className="text-[44px] leading-none">{localProfile.avatar.emoji}</div>
+                <p className="mt-2 text-[13px] font-bold text-[#6B7684]">{localProfile.avatar.label}</p>
               </div>
               <button onClick={() => setLocalProfile((prev) => ({ ...prev, avatar: getNextAvatar(prev.avatar.id, 'next') }))} className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-[16px] text-[#1A1F27] outline-none focus:outline-none shadow-sm">›</button>
             </div>
           </section>
 
-          <section className="rounded-[28px] bg-white p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] space-y-5">
+          <section className="rounded-[28px] bg-white px-5 py-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)] space-y-4">
             <div>
               <div className="flex items-center justify-between">
                 <label className="text-[13px] font-bold text-[#1A1F27]">닉네임</label>
@@ -329,7 +329,7 @@ export default function Onboarding({ setProfile, setInventory, masterIngredients
           onClick={handleProfileNext}
           className="mt-4 w-full shrink-0 rounded-[20px] bg-[#18CA87] px-5 py-4 text-[16px] font-bold text-white shadow-lg outline-none focus:outline-none shadow-[#18CA87]/30 transition-transform active:scale-[0.98]"
         >
-          다음 · 식재료 등록
+          계속하기
         </button>
       </div>
     );

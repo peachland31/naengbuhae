@@ -307,11 +307,14 @@ const createRandomProfileData = () => {
 };
 
 const getRemainingRatio = (item: InventoryItem) => {
-  if (item.initialQuantity <= 0) return 1;
-  return item.quantity / item.initialQuantity;
+  if (item.initialQuantity <= 0 || item.initialQuantity < item.quantity) return 1;
+  return item.quantity / item.initialQuantity;
 };
 
-const formatRatioPercent = (item: InventoryItem) => Math.round(getRemainingRatio(item) * 100);
+const formatRatioPercent = (item: InventoryItem) => {
+  if (item.initialQuantity <= 0 || item.initialQuantity < item.quantity) return 100;
+  return Math.round(getRemainingRatio(item) * 100);
+};
 
 // --- 드래그 스크롤 기능을 위한 컴포넌트 ---
 function DraggableScrollContainer({ children, className = '' }: { children: React.ReactNode, className?: string }) {
@@ -902,7 +905,7 @@ export default function App() {
 
               <div className="flex items-center justify-between px-1 pt-1 shrink-0">
               <span className="text-[12px] font-medium text-[#6B7684]">
-                전체 {recipeRecommendTab === 'ai' ? sortedAiRecommendations.length : sortedSelectedRecipes.length}건
+                전체 {sortedInventory.length}건
               </span>
                 <div className="relative">
                   <button onClick={() => setSortDropdownOpen(!sortDropdownOpen)} className="flex items-center gap-1 text-[12px] font-bold text-[#1A1F27] outline-none focus:outline-none">
@@ -1186,6 +1189,7 @@ export default function App() {
               aiRecipe={selectedAiRecipe}
               inventory={inventory}
               setInventory={setInventory}
+              ingredientMap={ingredientMap}
               onBack={() => { setCurrentTab('recipe'); setRecipeDetail(null); setSelectedAiRecipe(null); }}
             />
           )}
@@ -1551,6 +1555,7 @@ function RecipeDetailPage({
   aiRecipe,
   inventory,
   setInventory,
+  ingredientMap,
   onBack,
 }: {
   recipeDetail: any;
@@ -1558,6 +1563,7 @@ function RecipeDetailPage({
   aiRecipe: AIRecipeRecommendation;
   inventory: InventoryItem[];
   setInventory: React.Dispatch<React.SetStateAction<InventoryItem[]>>;
+  ingredientMap: Record<string, any>;
   onBack: () => void;
 }) {
   const [cooked, setCooked] = useState(false);
@@ -1567,20 +1573,18 @@ function RecipeDetailPage({
 
   const handleCook = () => {
     if (ownedNames.size > 0) {
-      // ingredientMap을 쓰지 않고 inventory의 name 매칭으로 차감
-      setInventory((prev) =>
-        prev
-          .map((inv) => {
-            // ingredientId를 이름으로 찾아 매칭
-            const masterName = inv.ingredientId; // 이름 기반 매칭 시도
-            // ownedNames에 있으면 수량 1 차감
-            if (ownedNames.has(masterName)) {
-              return { ...inv, quantity: Math.max(0, inv.quantity - 1) };
-            }
-            return inv;
-          })
-          .filter((inv) => inv.quantity > 0)
-      );
+      setInventory((prev) => {
+        const next = prev.map((inv) => {
+          // ingredientId로 ingredientMap에서 이름 조회 후 ownedNames와 매칭
+          const master = ingredientMap[inv.ingredientId];
+          const name = master?.name ?? '';
+          if (name && ownedNames.has(name)) {
+            return { ...inv, quantity: Math.max(0, inv.quantity - 1) };
+          }
+          return inv;
+        });
+        return next.filter((inv) => inv.quantity > 0);
+      });
     }
     setCooked(true);
     setTimeout(() => onBack(), 1500);
@@ -1589,7 +1593,7 @@ function RecipeDetailPage({
   return (
     <div className={`flex h-full flex-col bg-[#f4f4f4]`}>
       {/* ── 뒤로가기 헤더 — 항상 고정 ── */}
-      <div className="shrink-0 flex items-center gap-3 px-5 pt-6 pb-3 bg-[#f4f4f4] z-20">
+      <div className="shrink-0 flex items-center gap-3 px-5 pt-6 pb-3 bg-[#f4f4f4]/80 backdrop-blur-md z-20">
         <button
           onClick={onBack}
           className="flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm text-[#1A1F27] outline-none focus:outline-none"
@@ -1705,7 +1709,7 @@ function RecipeDetailPage({
           ) : (
             <button
               onClick={handleCook}
-              className="w-full rounded-[20px] bg-[#18CA87] px-5 py-4 text-[16px] font-bold text-white shadow-lg shadow-[#18CA87]/30 outline-none focus:outline-none active:scale-[0.98] transition-transform"
+              className="w-full rounded-[20px] bg-[#18CA87] px-5 py-4 text-[16px] font-bold text-white shadow-[0_4px_14px_rgba(0,0,0,0.12)] outline-none focus:outline-none active:scale-[0.98] transition-transform"
             >
               🍳 요리 완료 · 재료 차감
             </button>
