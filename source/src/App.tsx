@@ -513,6 +513,21 @@ export default function App() {
   const lowRatioItems = useMemo(() => inventory.filter((item) => getRemainingRatio(item) <= 0.3), [inventory]);
   const recentItems = useMemo(() => [...inventory].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 3), [inventory]);
 
+  // 냉장고 보유 재료의 총 절약 가능량 (g 환산)
+  const foodSavedGrams = useMemo(() => {
+    const UNIT_G: Record<string, number> = {
+      'g': 1, 'kg': 1000, 'ml': 1, 'l': 1000,
+      '개': 150, '대': 80, '모': 300, '알': 60,
+      '봉': 200, '팩': 200, '캔': 400, '병': 500,
+    };
+    return inventory.reduce((sum, item) => {
+      const master = ingredientMap[item.ingredientId];
+      const unit = item.unit ?? master?.unit ?? 'g';
+      const perUnit = UNIT_G[unit] ?? 100;
+      return sum + item.quantity * perUnit;
+    }, 0);
+  }, [inventory, ingredientMap]);
+
   // 기존 하드코딩된 MOCK_RECIPES 대신, 필요에 따라 빈 배열이나 API 결과를 활용하도록 수정
   const safeRecipes = useMemo<ScaledRecipe[]>(() => {
     return []; // 임시 조치: 추후 선택 재료 기반 백엔드 연동 시 이 부분을 대체합니다.
@@ -832,7 +847,7 @@ export default function App() {
                   <DashboardMiniCard title="보관 재료 수" value={`${inventory.length}개`} icon={IconBasket} />
                   <DashboardMiniCard title="마감 임박 재료 수" value={`${urgentItems.length}개`} icon={IconClock} />
                   <DashboardMiniCard title="소진 우선 재료 수" value={`${lowRatioItems.length}개`} icon={IconFlame} />
-                  <DashboardMiniCard title="추천 레시피 수" value={`${safeRecipes.length}개`} icon={IconChefHat} />
+                  <DashboardMiniCard title="음식물 절약량" value={foodSavedGrams >= 1000 ? `${(foodSavedGrams/1000).toFixed(1)}kg` : `${foodSavedGrams}g`} icon={IconChefHat} />
                 </div>
                 <div className="rounded-[16px] bg-white p-3">
                   <div className="flex flex-col gap-2 text-[11px]">
@@ -852,7 +867,7 @@ export default function App() {
                 </div>
               </section>
               <section className="flex gap-2">
-                <button onClick={() => setCurrentTab('fridge')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-3 text-left shadow-[0_3px_14px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.03]">
+                <button onClick={() => setCurrentTab('fridge')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-5 text-left shadow-[0_3px_14px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.03]">
                   <div>
                     <p className="text-[13px] font-bold tracking-[-0.02em] text-[#1A1F27]">나의 냉장고</p>
                     <p className="mt-0.5 text-[10px] leading-snug text-[#8B95A1]">재고 등록, 관리</p>
@@ -861,7 +876,7 @@ export default function App() {
                     <IconFridge className="w-5 h-5" />
                   </div>
                 </button>
-                <button onClick={() => setCurrentTab('recipe')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-3 text-left shadow-[0_3px_14px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.03]">
+                <button onClick={() => setCurrentTab('recipe')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-5 text-left shadow-[0_3px_14px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.03]">
                   <div>
                     <p className="text-[13px] font-bold tracking-[-0.02em] text-[#1A1F27]">맞춤 레시피</p>
                     <p className="mt-0.5 text-[10px] leading-snug text-[#8B95A1]">알레르기 필터</p>
@@ -1014,18 +1029,22 @@ export default function App() {
 
           {/* --- 레시피 탭 --- */}
           {currentTab === 'recipe' && (
-            <div className="flex h-full flex-col px-5 pt-8">
-              <section className="mb-6 shrink-0">
-                <p className="text-[11px] font-semibold text-[#8B95A1]">RECIPE RECOMMEND</p>
-                <h2 className="mt-1 text-[24px] font-bold tracking-[-0.04em] text-[#1A1F27]">
-                  {recipeRecommendTab === 'ai' ? 'AI 맞춤 추천' : '재료 선택 추천'}
-                </h2>
-                <div className="mt-4 flex rounded-[16px] bg-[#f4f4f4] p-1">
-                  <button onClick={() => setRecipeRecommendTab('ai')} className={`flex-1 rounded-[12px] py-2 text-[13px] font-bold transition-all ${recipeRecommendTab === 'ai' ? 'bg-white text-[#1A1F27] shadow-sm' : 'text-[#8B95A1]'}`}>AI 추천</button>
-                  <button onClick={() => setRecipeRecommendTab('selected')} className={`flex-1 rounded-[12px] py-2 text-[13px] font-bold transition-all ${recipeRecommendTab === 'selected' ? 'bg-white text-[#1A1F27] shadow-sm' : 'text-[#8B95A1]'}`}>재료 선택</button>
-                </div>
-              </section>
-
+            <div className="flex h-full flex-col px-5 pt-4">
+              {/* 탭바만 — 타이틀 제거 */}
+              <div className="mb-4 shrink-0 flex rounded-[16px] bg-[#f4f4f4] p-1">
+                <button
+                  onClick={() => setRecipeRecommendTab('ai')}
+                  className={`flex-1 rounded-[12px] py-2.5 text-[13px] font-bold transition-all outline-none focus:outline-none ${recipeRecommendTab === 'ai' ? 'bg-white text-[#1A1F27] shadow-sm' : 'text-[#8B95A1]'}`}
+                >
+                  AI 추천
+                </button>
+                <button
+                  onClick={() => setRecipeRecommendTab('selected')}
+                  className={`flex-1 rounded-[12px] py-2.5 text-[13px] font-bold transition-all outline-none focus:outline-none ${recipeRecommendTab === 'selected' ? 'bg-white text-[#1A1F27] shadow-sm' : 'text-[#8B95A1]'}`}
+                >
+                  재료 선택
+                </button>
+              </div>
               <section className={`flex-1 overflow-y-auto space-y-3 pb-4 ${hideScroll}`}>
                 {recipeRecommendTab === 'ai' ? (
                   <>
@@ -1485,20 +1504,29 @@ function RecipeDetailPage({
   const ownedNames = new Set([...(aiRecipe.owned_main ?? []), ...(aiRecipe.owned_sub ?? [])]);
 
   const handleCook = () => {
+    // deducted 계산을 setInventory 콜백 밖에서 수행 (React strict mode 두 번 실행 방지)
+    const snapshot = inventory; // 현재 inventory 스냅샷
     const deducted: {name: string; qty: number; emoji: string}[] = [];
+    snapshot.forEach((inv) => {
+      const master = ingredientMap[inv.ingredientId];
+      const name = master?.name ?? '';
+      if (name && ownedNames.has(name)) {
+        deducted.push({ name, qty: 1, emoji: master?.emoji ?? '🥘' });
+      }
+    });
     if (ownedNames.size > 0) {
-      setInventory((prev) => {
-        const next = prev.map((inv) => {
-          const master = ingredientMap[inv.ingredientId];
-          const name = master?.name ?? '';
-          if (name && ownedNames.has(name)) {
-            deducted.push({ name, qty: 1, emoji: master?.emoji ?? '🥘' });
-            return { ...inv, quantity: Math.max(0, inv.quantity - 1) };
-          }
-          return inv;
-        });
-        return next.filter((inv) => inv.quantity > 0);
-      });
+      setInventory((prev) =>
+        prev
+          .map((inv) => {
+            const master = ingredientMap[inv.ingredientId];
+            const name = master?.name ?? '';
+            if (name && ownedNames.has(name)) {
+              return { ...inv, quantity: Math.max(0, inv.quantity - 1) };
+            }
+            return inv;
+          })
+          .filter((inv) => inv.quantity > 0)
+      );
     }
     setCookedIngredients(deducted);
     setShowCookPopup(true);
