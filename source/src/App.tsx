@@ -432,6 +432,10 @@ export default function App() {
   const [selectedLoading, setSelectedLoading] = useState(false);
   const [selectedError, setSelectedError] = useState('');
 
+  // 음식물 절약 추적
+  const [savedFoodG, setSavedFoodG] = useState(0);       // 절약한 총 g
+  const [savedFoodCount, setSavedFoodCount] = useState(0); // 절약한 횟수
+
   // 1. 식재료 마스터 상태
   const [masterIngredients, setMasterIngredients] = useState<any[]>([]);
 
@@ -843,8 +847,8 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-2">
                   <DashboardMiniCard title="보관 재료 수" value={`${inventory.length}개`} icon={IconBasket} />
                   <DashboardMiniCard title="마감 임박 재료 수" value={`${urgentItems.length}개`} icon={IconClock} />
-                  <DashboardMiniCard title="소진 우선 재료 수" value={`${lowRatioItems.length}개`} icon={IconFlame} />
-                  <DashboardMiniCard title="추천 레시피 수" value={`${safeRecipes.length}개`} icon={IconChefHat} />
+                  <DashboardMiniCard title="음식물 절약 횟수" value={`${savedFoodCount}회`} icon={IconFlame} />
+                  <DashboardMiniCard title="음식물 절약량" value={`${savedFoodG}g`} icon={IconChefHat} />
                 </div>
                 <div className="rounded-[16px] bg-white p-3">
                   <div className="flex flex-col gap-2 text-[11px]">
@@ -864,7 +868,7 @@ export default function App() {
                 </div>
               </section>
               <section className="flex gap-2">
-                <button onClick={() => setCurrentTab('fridge')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-3 text-left shadow-[0_3px_14px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.03]">
+                <button onClick={() => setCurrentTab('fridge')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-5 text-left shadow-[0_3px_14px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.03]">
                   <div>
                     <p className="text-[13px] font-bold tracking-[-0.02em] text-[#1A1F27]">나의 냉장고</p>
                     <p className="mt-0.5 text-[10px] leading-snug text-[#8B95A1]">재고 등록, 관리</p>
@@ -873,7 +877,7 @@ export default function App() {
                     <IconFridge className="w-5 h-5" />
                   </div>
                 </button>
-                <button onClick={() => setCurrentTab('recipe')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-3 text-left shadow-[0_3px_14px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.03]">
+                <button onClick={() => setCurrentTab('recipe')} className="flex-1 flex items-center justify-between rounded-[20px] bg-white px-4 py-5 text-left shadow-[0_3px_14px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.03]">
                   <div>
                     <p className="text-[13px] font-bold tracking-[-0.02em] text-[#1A1F27]">맞춤 레시피</p>
                     <p className="mt-0.5 text-[10px] leading-snug text-[#8B95A1]">알레르기 필터</p>
@@ -1026,13 +1030,9 @@ export default function App() {
 
           {/* --- 레시피 탭 --- */}
           {currentTab === 'recipe' && (
-            <div className="flex h-full flex-col px-5 pt-8">
-              <section className="mb-6 shrink-0">
-                <p className="text-[11px] font-semibold text-[#8B95A1]">RECIPE RECOMMEND</p>
-                <h2 className="mt-1 text-[24px] font-bold tracking-[-0.04em] text-[#1A1F27]">
-                  {recipeRecommendTab === 'ai' ? 'AI 맞춤 추천' : '재료 선택 추천'}
-                </h2>
-                <div className="mt-4 flex rounded-[16px] bg-[#f4f4f4] p-1">
+            <div className="flex h-full flex-col px-5 pt-4">
+              <section className="mb-4 shrink-0">
+                <div className="flex rounded-[16px] bg-[#f4f4f4] p-1">
                   <button onClick={() => setRecipeRecommendTab('ai')} className={`flex-1 rounded-[12px] py-2 text-[13px] font-bold transition-all ${recipeRecommendTab === 'ai' ? 'bg-white text-[#1A1F27] shadow-sm' : 'text-[#8B95A1]'}`}>AI 추천</button>
                   <button onClick={() => setRecipeRecommendTab('selected')} className={`flex-1 rounded-[12px] py-2 text-[13px] font-bold transition-all ${recipeRecommendTab === 'selected' ? 'bg-white text-[#1A1F27] shadow-sm' : 'text-[#8B95A1]'}`}>재료 선택</button>
                 </div>
@@ -1813,11 +1813,8 @@ function SelectedRecipeTab({
 
   return (
     <>
-      {/* 안내 + 다시 추천 */}
-      <div className="flex items-center justify-between px-1">
-        <p className="text-[12px] text-[#6B7684]">
-          {isAllSelected ? '전체 재료 OR 조건으로 추천해요.' : `${priorityIngredientIds.length}개 선택 · AND 조건 추천`}
-        </p>
+      {/* 다시 추천 버튼 */}
+      <div className="flex items-center justify-end px-1">
         <button
           onClick={() => fetchSelectedRecommendations(priorityIngredientIds, isAllSelected ? 'or' : 'and')}
           className="rounded-full bg-[#18CA87] px-3 py-1.5 text-[11px] font-bold text-white outline-none focus:outline-none shadow-sm shadow-[#18CA87]/20"
